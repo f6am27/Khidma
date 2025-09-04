@@ -33,6 +33,12 @@ INSTALLED_APPS = [
     'corsheaders',
 
     'accounts',
+    'services',      # فئات الخدمات
+    'workers',       # ملفات العمال
+    'tasks',         # إدارة المهام  
+    'clients',       # APIs العميل
+    'chat',          # المحادثات
+    'notifications', # الإشعارات
 ]
 
 # الوسطاء (ضع corsheaders مبكرًا)
