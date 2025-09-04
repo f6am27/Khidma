@@ -1,0 +1,40 @@
+# ===== Python =====
+*.py[cod]
+__pycache__/
+*.so
+*.egg-info/
+*.egg
+
+# ===== Django =====
+db.sqlite3
+/media/
+staticfiles/
+local_settings.py
+*.log
+
+# ===== Environments =====
+.env
+.env.* 
+venv/
+.venv/
+env/
+ENV/
+
+# ===== Testing / Cache =====
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ===== Build / Distribution =====
+build/
+dist/
+
+# ===== IDEs & Editors =====
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ===== OS files =====
+.DS_Store
+Thumbs.db
