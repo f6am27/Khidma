@@ -3,8 +3,10 @@ from rest_framework import generics, status, filters
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.exceptions import ValidationError
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db.models import Q, Avg
+from django.db.models import Q, Avg, Min, Max, Sum, Count
+from math import radians, cos, sin, asin, sqrt
 from .models import WorkerProfile, WorkerService
 from .serializers import (
     WorkerProfileListSerializer, 
@@ -31,7 +33,7 @@ class WorkerListView(generics.ListAPIView):
     
     # Search fields
     search_fields = [
-        'user__username', 'user__first_name', 'user__last_name',
+        'profile__user__username', 'profile__user__first_name', 'profile__user__last_name',
         'bio', 'service_area', 'services__category__name'
     ]
     
@@ -47,7 +49,7 @@ class WorkerListView(generics.ListAPIView):
         
         # Filter by service category
         category = self.request.query_params.get('category', None)
-        if category:
+        if category and category not in ['Toutes Catégories', 'All Categories']:
             if category.isdigit():
                 # Filter by category ID
                 queryset = queryset.filter(services__category__id=category)
@@ -60,7 +62,7 @@ class WorkerListView(generics.ListAPIView):
         
         # Filter by area/location
         area = self.request.query_params.get('area', None)
-        if area:
+        if area and area not in ['Toutes Zones', 'All Areas']:
             queryset = queryset.filter(
                 Q(service_area__icontains=area)
             )
@@ -90,6 +92,7 @@ class WorkerListView(generics.ListAPIView):
         
         # Custom sorting options
         sort_by = request.query_params.get('sort_by', None)
+        
         if sort_by == 'price_asc':
             # Sort by minimum service price ascending
             queryset = queryset.order_by('services__base_price')
@@ -101,9 +104,56 @@ class WorkerListView(generics.ListAPIView):
         elif sort_by == 'experience':
             queryset = queryset.order_by('-total_jobs_completed')
         elif sort_by == 'nearest':
-            # TODO: Implement distance-based sorting
-            pass
+            # Distance-based sorting (Uber-style)
+            client_lat = request.query_params.get('lat')
+            client_lng = request.query_params.get('lng')
+            
+            if client_lat and client_lng:
+                try:
+                    client_lat = float(client_lat)
+                    client_lng = float(client_lng)
+                    
+                    # Calculate distance for each worker and sort
+                    workers_with_distance = []
+                    for worker in queryset:
+                        if worker.latitude and worker.longitude:
+                            distance = self.calculate_distance(
+                                client_lat, client_lng,
+                                float(worker.latitude), float(worker.longitude)
+                            )
+                            workers_with_distance.append((worker, distance))
+                        else:
+                            # Workers without location go to the end
+                            workers_with_distance.append((worker, 999))
+                    
+                    # Sort by distance
+                    workers_with_distance.sort(key=lambda x: x[1])
+                    queryset = [worker for worker, distance in workers_with_distance]
+                    
+                except (ValueError, TypeError):
+                    pass
         
+        # Handle pagination for sorted queryset
+        if sort_by == 'nearest' and isinstance(queryset, list):
+            # Manual pagination for distance-sorted results
+            page_size = self.get_paginator().page_size
+            page_number = request.query_params.get('page', 1)
+            try:
+                page_number = int(page_number)
+            except ValueError:
+                page_number = 1
+            
+            start = (page_number - 1) * page_size
+            end = start + page_size
+            page_queryset = queryset[start:end]
+            
+            serializer = self.get_serializer(page_queryset, many=True)
+            return Response({
+                'count': len(queryset),
+                'results': serializer.data
+            })
+        
+        # Standard pagination
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
@@ -114,6 +164,22 @@ class WorkerListView(generics.ListAPIView):
             'count': len(serializer.data),
             'results': serializer.data
         })
+
+    def calculate_distance(self, lat1, lng1, lat2, lng2):
+        """
+        Calculate distance between two points using Haversine formula
+        حساب المسافة بين نقطتين باستخدام معادلة Haversine
+        """
+        # Convert decimal degrees to radians 
+        lat1, lng1, lat2, lng2 = map(radians, [lat1, lng1, lat2, lng2])
+        
+        # Haversine formula 
+        dlat = lat2 - lat1
+        dlng = lng2 - lng1
+        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlng/2)**2
+        c = 2 * asin(sqrt(a))
+        r = 6371  # Radius of earth in kilometers
+        return c * r
 
 
 class WorkerDetailView(generics.RetrieveAPIView):
@@ -189,9 +255,9 @@ def worker_search_filters(request):
         is_active=True,
         worker__is_available=True
     ).aggregate(
-        min_price=models.Min('base_price'),
-        max_price=models.Max('base_price'),
-        avg_price=models.Avg('base_price')
+        min_price=Min('base_price'),
+        max_price=Max('base_price'),
+        avg_price=Avg('base_price')
     )
     
     # Flutter-compatible sort options (exactly matching your Flutter code)
@@ -229,8 +295,6 @@ def worker_stats(request):
     Get Flutter-compatible worker statistics
     إحصائيات العمال متوافقة مع Flutter
     """
-    from django.db.models import Count, Sum
-    
     # Basic statistics
     total_workers = WorkerProfile.objects.filter(
         is_available=True,
@@ -254,7 +318,7 @@ def worker_stats(request):
         is_available=True,
         profile__onboarding_completed=True,
         average_rating__gt=0
-    ).aggregate(avg_rating=models.Avg('average_rating'))['avg_rating']
+    ).aggregate(avg_rating=Avg('average_rating'))['avg_rating']
     
     # Total jobs completed
     total_jobs = WorkerProfile.objects.filter(

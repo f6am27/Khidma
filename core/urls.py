@@ -8,7 +8,7 @@ urlpatterns = [
     path('api/services/', include('services.urls')),      # فئات الخدمات
     path('api/workers/', include('workers.urls')),        # العمال
     path('api/tasks/', include('tasks.urls')),           # المهام
-    path('api/client/', include('clients.urls')),        # APIs العميل
+    path('api/clients/', include('clients.urls')),
     path('api/chat/', include('chat.urls')),             # المحادثات
     path('api/notifications/', include('notifications.urls')), # الإشعارات
 ]
