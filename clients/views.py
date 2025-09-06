@@ -8,14 +8,13 @@ from django.db.models import Q, Count, Avg
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
-from .models import ClientProfile, FavoriteWorker, ClientNotification, ClientSettings
+from .models import ClientProfile, FavoriteWorker, ClientSettings
 from .serializers import (
     ClientProfileSerializer,
     ClientBasicSerializer,
     FavoriteWorkerSerializer,
     FavoriteWorkerCreateSerializer,
     ClientStatsSerializer,
-    ClientNotificationSerializer,
     ClientSettingsSerializer
 )
 from workers.models import WorkerProfile
@@ -236,88 +235,6 @@ class ClientStatsView(generics.RetrieveAPIView):
         return client_profile
 
 
-class ClientNotificationsListView(generics.ListAPIView):
-    """
-    List client notifications
-    قائمة إشعارات العميل
-    """
-    serializer_class = ClientNotificationSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def get_queryset(self):
-        # Ensure user is a client
-        if self.request.user.profile.role != 'client':
-            return ClientNotification.objects.none()
-        
-        queryset = ClientNotification.objects.filter(
-            client=self.request.user.profile
-        ).order_by('-created_at')
-        
-        # Filter by read status
-        is_read = self.request.query_params.get('is_read')
-        if is_read is not None:
-            is_read_bool = is_read.lower() == 'true'
-            queryset = queryset.filter(is_read=is_read_bool)
-        
-        # Filter by notification type
-        notification_type = self.request.query_params.get('type')
-        if notification_type:
-            queryset = queryset.filter(notification_type=notification_type)
-        
-        return queryset
-
-
-@api_view(['PUT'])
-@permission_classes([permissions.IsAuthenticated])
-def mark_notification_as_read(request, notification_id):
-    """
-    Mark notification as read
-    تحديد الإشعار كمقروء
-    """
-    # Ensure user is a client
-    if request.user.profile.role != 'client':
-        raise PermissionDenied("Only clients can manage notifications")
-    
-    try:
-        notification = ClientNotification.objects.get(
-            id=notification_id,
-            client=request.user.profile
-        )
-        notification.mark_as_read()
-        
-        return Response({
-            'message': 'Notification marked as read',
-            'notification_id': notification_id
-        })
-    except ClientNotification.DoesNotExist:
-        raise NotFound("Notification not found")
-
-
-@api_view(['PUT'])
-@permission_classes([permissions.IsAuthenticated])
-def mark_all_notifications_as_read(request):
-    """
-    Mark all notifications as read
-    تحديد جميع الإشعارات كمقروءة
-    """
-    # Ensure user is a client
-    if request.user.profile.role != 'client':
-        raise PermissionDenied("Only clients can manage notifications")
-    
-    updated_count = ClientNotification.objects.filter(
-        client=request.user.profile,
-        is_read=False
-    ).update(
-        is_read=True,
-        read_at=timezone.now()
-    )
-    
-    return Response({
-        'message': f'{updated_count} notifications marked as read',
-        'updated_count': updated_count
-    })
-
-
 class ClientSettingsView(generics.RetrieveUpdateAPIView):
     """
     Get or update client settings with partial update support
@@ -397,12 +314,6 @@ def client_dashboard_data(request):
         created_at__gte=timezone.now() - timezone.timedelta(days=30)
     )
     
-    # Get unread notifications count
-    unread_notifications = ClientNotification.objects.filter(
-        client=request.user.profile,
-        is_read=False
-    ).count()
-    
     # Get favorite workers count
     favorite_workers_count = FavoriteWorker.objects.filter(
         client=request.user.profile
@@ -423,7 +334,6 @@ def client_dashboard_data(request):
             'recent_tasks_count': recent_tasks.count()
         },
         'activity': {
-            'unread_notifications': unread_notifications,
             'favorite_workers': favorite_workers_count,
             'active_tasks': ServiceRequest.objects.filter(
                 client=request.user.profile,

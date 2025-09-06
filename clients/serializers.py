@@ -2,7 +2,7 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from django.utils import timezone
-from .models import ClientProfile, FavoriteWorker, ClientNotification, ClientSettings
+from .models import ClientProfile, FavoriteWorker, ClientSettings
 from accounts.models import Profile
 from workers.models import WorkerProfile
 
@@ -251,9 +251,6 @@ class ClientStatsSerializer(serializers.ModelSerializer):
     total_spent = serializers.DecimalField(source='total_amount_spent', max_digits=10, decimal_places=2, read_only=True)
     average_task_value = serializers.SerializerMethodField()
     
-    # Rating statistics - removed as clients don't get rated
-    total_reviews_given = serializers.SerializerMethodField()
-    
     # Relationship statistics
     favorite_workers_count = serializers.SerializerMethodField()
     most_hired_worker = serializers.SerializerMethodField()
@@ -268,7 +265,7 @@ class ClientStatsSerializer(serializers.ModelSerializer):
         fields = [
             'published_tasks', 'completed_tasks', 'cancelled_tasks', 'active_tasks',
             'total_spent', 'average_task_value',
-            'total_reviews_given', 'favorite_workers_count', 'most_hired_worker',
+            'favorite_workers_count', 'most_hired_worker',
             'success_rate', 'member_since', 'days_active'
         ]
     
@@ -301,11 +298,6 @@ class ClientStatsSerializer(serializers.ModelSerializer):
             return round(total_value / completed_tasks.count(), 2)
         return 0.0
     
-    def get_total_reviews_given(self, obj):
-        """Get total reviews given by client"""
-        from tasks.models import TaskReview
-        return TaskReview.objects.filter(client=obj.profile).count()
-    
     def get_favorite_workers_count(self, obj):
         """Get favorite workers count"""
         return obj.profile.favorite_workers.count()
@@ -325,20 +317,6 @@ class ClientStatsSerializer(serializers.ModelSerializer):
         """Calculate days since registration"""
         days = (timezone.now().date() - obj.created_at.date()).days
         return days
-
-
-class ClientNotificationSerializer(serializers.ModelSerializer):
-    """
-    Client notification serializer
-    محول إشعارات العميل
-    """
-    class Meta:
-        model = ClientNotification
-        fields = [
-            'id', 'notification_type', 'title', 'message',
-            'is_read', 'created_at', 'read_at', 'expires_at'
-        ]
-        read_only_fields = ['id', 'created_at']
 
 
 class ClientSettingsSerializer(serializers.ModelSerializer):

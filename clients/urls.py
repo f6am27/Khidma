@@ -15,11 +15,6 @@ urlpatterns = [
     path('favorites/<int:worker_id>/toggle/', views.toggle_favorite_worker, name='toggle-favorite-worker'),
     path('favorites/<int:worker_id>/status/', views.check_worker_favorite_status, name='check-favorite-status'),
     
-    # Notifications
-    path('notifications/', views.ClientNotificationsListView.as_view(), name='client-notifications'),
-    path('notifications/<int:notification_id>/read/', views.mark_notification_as_read, name='mark-notification-read'),
-    path('notifications/mark-all-read/', views.mark_all_notifications_as_read, name='mark-all-notifications-read'),
-    
     # Settings
     path('settings/', views.ClientSettingsView.as_view(), name='client-settings'),
 ]

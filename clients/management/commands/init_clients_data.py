@@ -8,7 +8,7 @@ from decimal import Decimal
 
 from accounts.models import Profile
 from workers.models import WorkerProfile
-from clients.models import ClientProfile, FavoriteWorker, ClientNotification, ClientSettings
+from clients.models import ClientProfile, FavoriteWorker, ClientSettings
 
 
 class Command(BaseCommand):
@@ -26,7 +26,6 @@ class Command(BaseCommand):
             self.stdout.write('Clearing existing client data...')
             ClientProfile.objects.all().delete()
             FavoriteWorker.objects.all().delete()
-            ClientNotification.objects.all().delete()
             ClientSettings.objects.all().delete()
 
         self.stdout.write('Creating client profiles...')
@@ -34,9 +33,6 @@ class Command(BaseCommand):
         
         self.stdout.write('Creating favorite workers relationships...')
         self.create_favorite_workers()
-        
-        self.stdout.write('Creating client notifications...')
-        self.create_client_notifications()
         
         self.stdout.write('Creating client settings...')
         self.create_client_settings()
@@ -262,99 +258,6 @@ class Command(BaseCommand):
                 self.stdout.write(
                     self.style.WARNING(f'Client {relationship["client_username"]} not found')
                 )
-
-    def create_client_notifications(self):
-        """Create sample client notifications"""
-        client_profiles = Profile.objects.filter(role='client')
-        
-        if not client_profiles.exists():
-            return
-
-        notification_templates = [
-            {
-                'type': 'task_published',
-                'title': 'Tâche publiée avec succès',
-                'message': 'Votre demande "{}" a été publiée et est maintenant visible par les prestataires.',
-            },
-            {
-                'type': 'worker_applied',
-                'title': 'Nouvelle candidature reçue',
-                'message': '{} souhaite effectuer votre tâche "{}". Consultez son profil et acceptez l\'offre.',
-            },
-            {
-                'type': 'task_completed',
-                'title': 'Service terminé',
-                'message': '{} a marqué votre tâche "{}" comme terminée. Confirmez et effectuez le paiement.',
-            },
-            {
-                'type': 'payment_reminder',
-                'title': 'Rappel de paiement',
-                'message': 'N\'oubliez pas d\'effectuer le paiement pour votre service "{}" avec {}.',
-            },
-            {
-                'type': 'system_update',
-                'title': 'Mise à jour de l\'application',
-                'message': 'Une nouvelle version de Khidma est disponible avec des améliorations de performance.',
-            }
-        ]
-
-        task_titles = [
-            'Nettoyage de maison', 'Réparation plomberie', 'Garde d\'enfants',
-            'Jardinage', 'Livraison courses', 'Peinture salon'
-        ]
-        
-        worker_names = [
-            'Fatima Al-Zahra', 'Ahmed Hassan', 'Omar Ba', 
-            'Aicha Mint Salem', 'Mohamed Ould Ahmed'
-        ]
-
-        for client in client_profiles:
-            # Create 3-7 notifications per client
-            num_notifications = random.randint(3, 7)
-            
-            for _ in range(num_notifications):
-                template = random.choice(notification_templates)
-                
-                # Fill in template variables
-                if '{}' in template['message']:
-                    if template['type'] in ['task_published', 'task_completed', 'payment_reminder']:
-                        task_title = random.choice(task_titles)
-                        if template['type'] == 'task_published':
-                            message = template['message'].format(task_title)
-                        else:
-                            worker_name = random.choice(worker_names)
-                            message = template['message'].format(worker_name, task_title)
-                    elif template['type'] == 'worker_applied':
-                        worker_name = random.choice(worker_names)
-                        task_title = random.choice(task_titles)
-                        message = template['message'].format(worker_name, task_title)
-                    else:
-                        message = template['message']
-                else:
-                    message = template['message']
-                
-                # Create notification
-                created_at = timezone.now() - timedelta(
-                    hours=random.randint(1, 168)  # Last week
-                )
-                
-                notification = ClientNotification.objects.create(
-                    client=client,
-                    notification_type=template['type'],
-                    title=template['title'],
-                    message=message,
-                    is_read=random.choice([True, False]),
-                    created_at=created_at
-                )
-                
-                # Set read_at for read notifications
-                if notification.is_read:
-                    notification.read_at = created_at + timedelta(
-                        minutes=random.randint(5, 1440)
-                    )
-                    notification.save()
-
-        self.stdout.write(f'✓ Created notifications for {client_profiles.count()} clients')
 
     def create_client_settings(self):
         """Create client settings"""
