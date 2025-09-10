@@ -1,84 +1,8 @@
-# workers/models.py
+# workers/models.py - النسخة النهائية المحسنة
 from django.db import models
-from django.contrib.auth.models import User
 from django.core.validators import MinValueValidator, MaxValueValidator
-from accounts.models import Profile
+from users.models import User
 from services.models import ServiceCategory
-
-class WorkerProfile(models.Model):
-    """
-    Detailed worker profile
-    الملف الشخصي المفصل للعامل
-    """
-    profile = models.OneToOneField(
-        Profile, 
-        on_delete=models.CASCADE, 
-        related_name="worker_profile"
-    )
-    
-    # Basic info - معلومات أساسية
-    bio = models.TextField(blank=True, help_text="Service description from onboarding")
-    service_area = models.CharField(max_length=200, help_text="Zone d'intervention")
-    profile_image = models.ImageField(upload_to='worker_avatars/', null=True, blank=True)
-    
-    # Availability - التوفر
-    WEEKDAYS_CHOICES = [
-        ('monday', 'Lun'),
-        ('tuesday', 'Mar'), 
-        ('wednesday', 'Mer'),
-        ('thursday', 'Jeu'),
-        ('friday', 'Ven'),
-        ('saturday', 'Sam'),
-        ('sunday', 'Dim'),
-    ]
-    
-    available_days = models.JSONField(
-        default=list, 
-        help_text="List of available weekdays: ['monday', 'tuesday', ...]"
-    )
-    work_start_time = models.TimeField(null=True, blank=True)
-    work_end_time = models.TimeField(null=True, blank=True)
-    
-    # Location - الموقع
-    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    
-    # Stats and ratings - الإحصائيات والتقييمات
-    total_jobs_completed = models.PositiveIntegerField(default=0)
-    average_rating = models.DecimalField(
-        max_digits=3, 
-        decimal_places=2, 
-        default=0.0,
-        validators=[MinValueValidator(0.0), MaxValueValidator(5.0)]
-    )
-    total_reviews = models.PositiveIntegerField(default=0)
-    
-    # Status - حالة الحساب
-    is_verified = models.BooleanField(default=False)
-    is_available = models.BooleanField(default=True)
-    is_online = models.BooleanField(default=False)
-    last_seen = models.DateTimeField(auto_now=True)
-    
-    # Timestamps
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def __str__(self):
-        return f"{self.profile.user.username} - Worker Profile"
-
-    @property
-    def user(self):
-        """Quick access to user object"""
-        return self.profile.user
-
-    @property
-    def phone(self):
-        """Quick access to phone"""
-        return self.profile.phone
-
-    class Meta:
-        verbose_name = "Worker Profile"
-        verbose_name_plural = "Worker Profiles"
 
 
 class WorkerService(models.Model):
@@ -87,16 +11,17 @@ class WorkerService(models.Model):
     الخدمات التي يقدمها العامل مع الأسعار
     """
     worker = models.ForeignKey(
-        WorkerProfile, 
+        User, 
         on_delete=models.CASCADE, 
-        related_name="services"
+        related_name="worker_services",
+        limit_choices_to={'role': 'worker'}
     )
     category = models.ForeignKey(
         ServiceCategory, 
         on_delete=models.CASCADE
     )
     
-    # Pricing - الأسعار
+    # Pricing
     base_price = models.DecimalField(
         max_digits=10, 
         decimal_places=2,
@@ -115,7 +40,7 @@ class WorkerService(models.Model):
         default='negotiable'
     )
     
-    # Service details - تفاصيل الخدمة  
+    # Service details
     description = models.TextField(
         blank=True,
         help_text="Specific description for this service"
@@ -135,9 +60,11 @@ class WorkerService(models.Model):
         unique_together = ('worker', 'category')
         verbose_name = "Worker Service"
         verbose_name_plural = "Worker Services"
+        ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.worker.user.username} - {self.category.name} ({self.base_price} MRU)"
+        worker_name = self.worker.get_full_name() or self.worker.phone
+        return f"{worker_name} - {self.category.name} ({self.base_price} MRU)"
 
 
 class WorkerGallery(models.Model):
@@ -146,9 +73,10 @@ class WorkerGallery(models.Model):
     معرض أعمال العامل
     """
     worker = models.ForeignKey(
-        WorkerProfile,
+        User,
         on_delete=models.CASCADE,
-        related_name="gallery"
+        related_name="worker_gallery",
+        limit_choices_to={'role': 'worker'}
     )
     image = models.ImageField(upload_to='worker_gallery/')
     caption = models.CharField(max_length=200, blank=True)
@@ -171,30 +99,86 @@ class WorkerGallery(models.Model):
         verbose_name_plural = "Worker Gallery Images"
 
     def __str__(self):
-        return f"{self.worker.user.username} - Gallery Image"
+        worker_name = self.worker.get_full_name() or self.worker.phone
+        return f"{worker_name} - Gallery Image"
 
 
-# Optional: For future features - للميزات المستقبلية
-class WorkerExperience(models.Model):
+class WorkerSettings(models.Model):
     """
-    Work experience entries for workers
-    خبرات العمل للعامل
+    Worker application settings and preferences
+    إعدادات وتفضيلات تطبيق العامل
     """
-    worker = models.ForeignKey(
-        WorkerProfile,
-        on_delete=models.CASCADE,
-        related_name="experiences"
+    worker = models.OneToOneField(
+        User, 
+        on_delete=models.CASCADE, 
+        related_name='worker_settings',
+        limit_choices_to={'role': 'worker'}
     )
-    title = models.CharField(max_length=200)
-    description = models.TextField(blank=True)
-    start_date = models.DateField()
-    end_date = models.DateField(null=True, blank=True, help_text="Leave blank for current")
+    
+    # Notification preferences
+    push_notifications = models.BooleanField(default=True)
+    email_notifications = models.BooleanField(default=False)
+    sms_notifications = models.BooleanField(default=True)
+    
+    # App preferences
+    theme_preference = models.CharField(
+        max_length=10,
+        choices=[
+            ('light', 'Light'),
+            ('dark', 'Dark'),
+            ('auto', 'Auto'),
+        ],
+        default='auto'
+    )
+    
+    language = models.CharField(
+        max_length=10,
+        choices=[
+            ('fr', 'Français'),
+            ('ar', 'العربية'),
+            ('en', 'English'),
+        ],
+        default='fr'
+    )
+    
+    # Worker-specific settings
+    auto_accept_jobs = models.BooleanField(
+        default=False,
+        help_text="Automatically accept job requests"
+    )
+    
+    max_daily_jobs = models.PositiveIntegerField(
+        default=5,
+        help_text="Maximum jobs per day"
+    )
+    
+    profile_visibility = models.CharField(
+        max_length=20,
+        choices=[
+            ('public', 'Public'),
+            ('clients_only', 'Clients Only'),
+            ('private', 'Private'),
+        ],
+        default='public'
+    )
+    
+    # Work preferences
+    travel_radius_km = models.PositiveIntegerField(
+        default=15,
+        help_text="Maximum travel distance in kilometers"
+    )
+    
+    instant_booking = models.BooleanField(
+        default=True,
+        help_text="Allow clients to book instantly"
+    )
+    
     created_at = models.DateTimeField(auto_now_add=True)
-
+    updated_at = models.DateTimeField(auto_now=True)
+    
     class Meta:
-        ordering = ['-start_date']
-        verbose_name = "Worker Experience"
-        verbose_name_plural = "Worker Experiences"
-
+        verbose_name = "Worker Settings"
+        verbose_name_plural = "Worker Settings"
+    
     def __str__(self):
-        return f"{self.worker.user.username} - {self.title}"
+        return f"Settings for {self.worker.get_full_name()}"

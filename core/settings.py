@@ -32,7 +32,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'corsheaders',
 
-    'accounts',
+    'users', 
     'services',      # فئات الخدمات
     'workers',       # ملفات العمال
     'tasks',         # إدارة المهام  
@@ -133,3 +133,9 @@ TWILIO_VERIFY_SERVICE_SID = os.getenv('TWILIO_VERIFY_SERVICE_SID', '')
 CHINGUISOFT_BASE_URL = os.getenv('CHINGUISOFT_BASE_URL', '')
 CHINGUISOFT_VALIDATION_KEY = os.getenv('CHINGUISOFT_VALIDATION_KEY', '')
 CHINGUISOFT_VALIDATION_TOKEN = os.getenv('CHINGUISOFT_VALIDATION_TOKEN', '')
+
+# في core/settings.py أضيفي هذا السطر في أي مكان
+LANGUAGE_CODE = 'en-us'
+#after users create
+# Custom User Model
+AUTH_USER_MODEL = 'users.User'

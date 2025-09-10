@@ -1,9 +1,7 @@
 # tasks/models.py
 from django.db import models
-from django.contrib.auth.models import User
 from django.core.validators import MinValueValidator, MaxValueValidator
-from accounts.models import Profile
-from workers.models import WorkerProfile
+from users.models import User  # النظام الجديد
 from services.models import ServiceCategory
 
 
@@ -12,11 +10,12 @@ class ServiceRequest(models.Model):
     Task/Service request posted by client
     طلب الخدمة/المهمة من العميل
     """
-    # Basic info
+    # Basic info - علاقة مباشرة مع User
     client = models.ForeignKey(
-        Profile,
+        User,
         on_delete=models.CASCADE,
-        related_name="service_requests"
+        related_name="service_requests",
+        limit_choices_to={'role': 'client'}
     )
     
     # Task details
@@ -32,13 +31,13 @@ class ServiceRequest(models.Model):
     budget = models.DecimalField(
         max_digits=10,
         decimal_places=2,
-        validators=[MinValueValidator(0.01)],  # Only ensure positive amount
+        validators=[MinValueValidator(0.01)],
         help_text="Budget proposé en MRU"
     )
     
     # Location and timing
-    location = models.CharField(max_length=300)  # "Tevragh Zeina, Nouakchott"
-    preferred_time = models.CharField(max_length=100)  # "9:00 AM" or "2:30 PM" etc.
+    location = models.CharField(max_length=300)
+    preferred_time = models.CharField(max_length=100)
     
     # Location coordinates (optional for GPS location)
     latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
@@ -58,16 +57,17 @@ class ServiceRequest(models.Model):
         default='published'
     )
     
-    # Worker assignment
+    # Worker assignment - علاقة مباشرة مع User
     assigned_worker = models.ForeignKey(
-        WorkerProfile,
+        User,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name="assigned_tasks"
+        related_name="assigned_tasks",
+        limit_choices_to={'role': 'worker'}
     )
     
-    # Final pricing (negotiated price if different from budget)
+    # Final pricing
     final_price = models.DecimalField(
         max_digits=10,
         decimal_places=2,
@@ -94,7 +94,7 @@ class ServiceRequest(models.Model):
         verbose_name_plural = "Service Requests"
     
     def __str__(self):
-        return f"{self.title} - {self.client.user.username} ({self.get_status_display()})"
+        return f"{self.title} - {self.client.get_full_name() or self.client.phone} ({self.get_status_display()})"
     
     @property
     def applications_count(self):
@@ -103,8 +103,8 @@ class ServiceRequest(models.Model):
     
     @property 
     def client_user(self):
-        """Quick access to client user"""
-        return self.client.user
+        """Quick access to client user (backward compatibility)"""
+        return self.client
     
     @property
     def service_type(self):
@@ -114,8 +114,8 @@ class ServiceRequest(models.Model):
 
 class TaskApplication(models.Model):
     """
-    Worker application to a service request (simplified)
-    تقدم العامل للمهمة/الخدمة (مبسط)
+    Worker application to a service request
+    تقدم العامل للمهمة/الخدمة
     """
     service_request = models.ForeignKey(
         ServiceRequest,
@@ -123,9 +123,10 @@ class TaskApplication(models.Model):
         related_name="applications"
     )
     worker = models.ForeignKey(
-        WorkerProfile,
+        User,
         on_delete=models.CASCADE,
-        related_name="task_applications"
+        related_name="task_applications",
+        limit_choices_to={'role': 'worker'}
     )
     
     # Message templates for automatic responses
@@ -137,7 +138,6 @@ class TaskApplication(models.Model):
         "Bonjour, je propose mes services pour cette tâche. Qualité garantie.",
     ]
     
-    # Only message field - no proposed price or availability time
     application_message = models.TextField(
         blank=True,
         default="Je suis disponible pour cette tâche et j'ai l'expérience nécessaire.",
@@ -170,31 +170,30 @@ class TaskApplication(models.Model):
         verbose_name_plural = "Task Applications"
     
     def __str__(self):
-        return f"{self.worker.user.username} → {self.service_request.title}"
+        return f"{self.worker.get_full_name() or self.worker.phone} → {self.service_request.title}"
     
     @property
     def worker_name(self):
         """Worker full name for display"""
-        user = self.worker.profile.user
-        if user.first_name and user.last_name:
-            return f"{user.first_name} {user.last_name}"
-        return user.username
+        return self.worker.get_full_name() or self.worker.phone
     
     @property
     def worker_rating(self):
         """Worker average rating"""
-        return self.worker.average_rating
+        if hasattr(self.worker, 'worker_profile'):
+            return self.worker.worker_profile.average_rating
+        return 0.0
     
     @property
     def worker_phone(self):
         """Worker phone number"""
-        return self.worker.profile.phone
+        return self.worker.phone
 
 
 class TaskReview(models.Model):
     """
-    Client review of completed task (simplified)
-    تقييم العميل للمهمة المكتملة (مبسط)
+    Client review of completed task
+    تقييم العميل للمهمة المكتملة
     """
     service_request = models.OneToOneField(
         ServiceRequest,
@@ -202,17 +201,19 @@ class TaskReview(models.Model):
         related_name="review"
     )
     client = models.ForeignKey(
-        Profile,
+        User,
         on_delete=models.CASCADE,
-        related_name="given_reviews"
+        related_name="given_reviews",
+        limit_choices_to={'role': 'client'}
     )
     worker = models.ForeignKey(
-        WorkerProfile,
+        User,
         on_delete=models.CASCADE,
-        related_name="received_reviews"
+        related_name="received_reviews",
+        limit_choices_to={'role': 'worker'}
     )
     
-    # Rating (1-5 stars) - required
+    # Rating (1-5 stars)
     rating = models.IntegerField(
         validators=[MinValueValidator(1), MaxValueValidator(5)],
         help_text="Note de 1 à 5 étoiles"
@@ -245,23 +246,22 @@ class TaskReview(models.Model):
         super().save(*args, **kwargs)
         
         # Recalculate worker's average rating
-        from django.db.models import Avg
-        
-        avg_rating = TaskReview.objects.filter(
-            worker=self.worker,
-            is_public=True
-        ).aggregate(avg_rating=Avg('rating'))['avg_rating']
-        
-        if avg_rating:
-            self.worker.average_rating = round(avg_rating, 2)
+        if hasattr(self.worker, 'worker_profile'):
+            from django.db.models import Avg
             
-            # Update review count
-            self.worker.total_reviews = TaskReview.objects.filter(
+            avg_rating = TaskReview.objects.filter(
                 worker=self.worker,
                 is_public=True
-            ).count()
+            ).aggregate(avg_rating=Avg('rating'))['avg_rating']
             
-            self.worker.save(update_fields=['average_rating', 'total_reviews'])
+            if avg_rating:
+                worker_profile = self.worker.worker_profile
+                worker_profile.average_rating = round(avg_rating, 2)
+                worker_profile.total_reviews = TaskReview.objects.filter(
+                    worker=self.worker,
+                    is_public=True
+                ).count()
+                worker_profile.save(update_fields=['average_rating', 'total_reviews'])
 
 
 class TaskNotification(models.Model):
@@ -269,9 +269,9 @@ class TaskNotification(models.Model):
     Notifications related to tasks
     إشعارات متعلقة بالمهام
     """
-    # Recipients
+    # Recipients - علاقة مباشرة مع User
     recipient = models.ForeignKey(
-        Profile,
+        User,
         on_delete=models.CASCADE,
         related_name="task_notifications"
     )
@@ -329,7 +329,7 @@ class TaskNotification(models.Model):
         verbose_name_plural = "Task Notifications"
     
     def __str__(self):
-        return f"{self.recipient.user.username} - {self.title}"
+        return f"{self.recipient.get_full_name() or self.recipient.phone} - {self.title}"
     
     def mark_as_read(self):
         """Mark notification as read"""

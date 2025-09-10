@@ -18,9 +18,7 @@ urlpatterns = [
     path('settings/', views.NotificationSettingsView.as_view(), name='settings'),
     path('types/', views.notification_types, name='types'),
     
-    # إدارة القوالب (للإدارة)
-    path('templates/', views.NotificationTemplateListView.as_view(), name='template_list'),
-    path('templates/<int:pk>/', views.NotificationTemplateDetailView.as_view(), name='template_detail'),
+    # إدارة (للإدارة) - مبسط
     path('admin/create/', views.create_notification, name='admin_create'),
     
     # إجراءات الإشعارات الفردية (في النهاية)

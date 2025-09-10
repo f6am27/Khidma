@@ -63,7 +63,7 @@ class Command(BaseCommand):
             # جمال وعناية
             {'name': 'Coiffure à Domicile', 'name_ar': 'حلاقة منزلية', 'icon': 'content_cut'},
             {'name': 'Maquillage', 'name_ar': 'خدمة مكياج', 'icon': 'face'},
-            {'name': 'Manucure', 'name_ar': 'عناية أظافر', 'icon': 'spa'},
+            {'name': 'Henné', 'name_ar': 'الحنّة', 'icon': 'brush'},
             {'name': 'Service Mariée', 'name_ar': 'خدمة عروس', 'icon': 'face'},
             
             # خدمات تقنية

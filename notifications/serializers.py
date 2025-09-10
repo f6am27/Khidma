@@ -1,57 +1,35 @@
 # notifications/serializers.py
 from rest_framework import serializers
 from django.utils import timezone
-from .models import Notification, NotificationSettings, NotificationTemplate
-from .utils import get_user_language
+from .models import Notification, NotificationSettings
+from users.models import User
 
 
 class NotificationSerializer(serializers.ModelSerializer):
     """
-    محول الإشعارات مع الترجمة التلقائية
-    Notification serializer with automatic translation
+    محول الإشعارات مع نصوص مباشرة
+    Notification serializer with direct text
     """
-    # الحقول المترجمة
-    title = serializers.SerializerMethodField()
-    message = serializers.SerializerMethodField()
-    
     # معلومات إضافية
     time_ago = serializers.SerializerMethodField()
-    is_expired = serializers.ReadOnlyField()
     recipient_role = serializers.ReadOnlyField()
     
     # معلومات المهمة المرتبطة
     task_title = serializers.SerializerMethodField()
     task_id = serializers.SerializerMethodField()
     
-    # معلومات العامل المرتبط
-    worker_name = serializers.SerializerMethodField()
-    worker_id = serializers.SerializerMethodField()
-    
     class Meta:
         model = Notification
         fields = [
             'id', 'notification_type', 'title', 'message', 'is_read',
-            'priority', 'time_ago', 'is_expired', 'recipient_role',
-            'task_title', 'task_id', 'worker_name', 'worker_id',
+            'time_ago', 'recipient_role', 'task_title', 'task_id',
             'created_at', 'read_at'
         ]
         read_only_fields = [
-            'id', 'notification_type', 'title', 'message', 'priority',
-            'time_ago', 'is_expired', 'recipient_role', 'task_title',
-            'task_id', 'worker_name', 'worker_id', 'created_at'
+            'id', 'notification_type', 'title', 'message',
+            'time_ago', 'recipient_role', 'task_title',
+            'task_id', 'created_at'
         ]
-    
-    def get_title(self, obj):
-        """الحصول على العنوان المترجم"""
-        language = self._get_user_language(obj)
-        content = obj.get_localized_content(language)
-        return content['title']
-    
-    def get_message(self, obj):
-        """الحصول على الرسالة المترجمة"""
-        language = self._get_user_language(obj)
-        content = obj.get_localized_content(language)
-        return content['message']
     
     def get_time_ago(self, obj):
         """الحصول على الوقت المنقضي بالفرنسية"""
@@ -87,24 +65,6 @@ class NotificationSerializer(serializers.ModelSerializer):
     def get_task_id(self, obj):
         """الحصول على رقم المهمة المرتبطة"""
         return obj.related_task.id if obj.related_task else None
-    
-    def get_worker_name(self, obj):
-        """الحصول على اسم العامل المرتبط"""
-        if obj.related_worker:
-            user = obj.related_worker.profile.user
-            if user.first_name and user.last_name:
-                return f"{user.first_name} {user.last_name}"
-            return user.username
-        return None
-    
-    def get_worker_id(self, obj):
-        """الحصول على رقم العامل المرتبط"""
-        return obj.related_worker.id if obj.related_worker else None
-    
-    def _get_user_language(self, obj):
-        """الحصول على لغة المستخدم"""
-        from .utils import get_user_language
-        return get_user_language(obj.recipient)
 
 
 class NotificationListSerializer(NotificationSerializer):
@@ -115,22 +75,18 @@ class NotificationListSerializer(NotificationSerializer):
     class Meta(NotificationSerializer.Meta):
         fields = [
             'id', 'notification_type', 'title', 'message', 'is_read',
-            'priority', 'time_ago', 'worker_name', 'created_at'
+            'time_ago', 'created_at'
         ]
 
 
 class NotificationSettingsSerializer(serializers.ModelSerializer):
     """
-    محول إعدادات الإشعارات
-    Notification settings serializer
+    محول إعدادات الإشعارات - مبسط
+    Notification settings serializer - simplified
     """
     class Meta:
         model = NotificationSettings
-        fields = [
-            'notifications_enabled', 'task_notifications', 
-            'message_notifications', 'payment_notifications',
-            'quiet_hours_start', 'quiet_hours_end'
-        ]
+        fields = ['notifications_enabled']
     
     def __init__(self, *args, **kwargs):
         """تفعيل التحديث الجزئي"""
@@ -164,31 +120,6 @@ class NotificationStatsSerializer(serializers.Serializer):
     task_notifications = serializers.IntegerField(read_only=True)
     message_notifications = serializers.IntegerField(read_only=True)
     payment_notifications = serializers.IntegerField(read_only=True)
-    
-    # إحصائيات حسب الأولوية
-    high_priority = serializers.IntegerField(read_only=True)
-    medium_priority = serializers.IntegerField(read_only=True)
-    low_priority = serializers.IntegerField(read_only=True)
-
-
-class NotificationTemplateSerializer(serializers.ModelSerializer):
-    """
-    محول قوالب الإشعارات
-    Notification template serializer
-    """
-    class Meta:
-        model = NotificationTemplate
-        fields = [
-            'id', 'notification_type', 'title_fr', 'message_fr',
-            'title_ar', 'message_ar', 'title_en', 'message_en',
-            'template_variables', 'is_active'
-        ]
-    
-    def validate_template_variables(self, value):
-        """التحقق من صحة متغيرات القالب"""
-        if not isinstance(value, list):
-            raise serializers.ValidationError("Template variables must be a list")
-        return value
 
 
 class BulkNotificationSerializer(serializers.Serializer):
@@ -216,7 +147,7 @@ class BulkNotificationSerializer(serializers.Serializer):
             raise serializers.ValidationError("Au moins un ID de notification est requis")
         
         # التحقق من وجود الإشعارات
-        user = self.context['request'].user.profile
+        user = self.context['request'].user
         existing_ids = Notification.objects.filter(
             id__in=value,
             recipient=user
@@ -241,41 +172,24 @@ class NotificationCreateSerializer(serializers.Serializer):
         choices=Notification.ALL_NOTIFICATION_TYPES,
         help_text="نوع الإشعار"
     )
-    context_data = serializers.JSONField(
-        default=dict,
-        help_text="بيانات السياق"
-    )
-    priority = serializers.ChoiceField(
-        choices=Notification.PRIORITY_CHOICES,
-        default='medium',
-        help_text="أولوية الإشعار"
-    )
-    expires_at = serializers.DateTimeField(
-        required=False,
-        help_text="تاريخ انتهاء الصلاحية"
-    )
+    title = serializers.CharField(max_length=200, help_text="عنوان الإشعار")
+    message = serializers.CharField(help_text="محتوى الإشعار")
     
     def validate_recipient_id(self, value):
         """التحقق من وجود المستلم"""
-        from accounts.models import Profile
         try:
-            Profile.objects.get(id=value)
+            User.objects.get(id=value)
             return value
-        except Profile.DoesNotExist:
+        except User.DoesNotExist:
             raise serializers.ValidationError("Utilisateur non trouvé")
     
     def create(self, validated_data):
         """إنشاء إشعار جديد"""
-        from accounts.models import Profile
-        
-        recipient = Profile.objects.get(id=validated_data['recipient_id'])
+        recipient = User.objects.get(id=validated_data['recipient_id'])
         
         return Notification.objects.create(
             recipient=recipient,
             notification_type=validated_data['notification_type'],
-            title_key=f"notifications.{validated_data['notification_type']}.title",
-            message_key=f"notifications.{validated_data['notification_type']}.message",
-            context_data=validated_data.get('context_data', {}),
-            priority=validated_data.get('priority', 'medium'),
-            expires_at=validated_data.get('expires_at')
+            title=validated_data['title'],
+            message=validated_data['message']
         )

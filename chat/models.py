@@ -2,7 +2,7 @@
 from django.db import models
 from django.utils import timezone
 from django.core.exceptions import ValidationError
-from accounts.models import Profile
+from users.models import User
 
 
 class Conversation(models.Model):
@@ -10,9 +10,9 @@ class Conversation(models.Model):
     محادثة بين عميل وعامل
     Conversation between client and worker
     """
-    # المشاركون في المحادثة
+    # المشاركون في المحادثة - مباشرة مع User
     client = models.ForeignKey(
-        Profile,
+        User,
         on_delete=models.CASCADE,
         related_name='client_conversations',
         limit_choices_to={'role': 'client'},
@@ -20,7 +20,7 @@ class Conversation(models.Model):
     )
     
     worker = models.ForeignKey(
-        Profile,
+        User,
         on_delete=models.CASCADE,
         related_name='worker_conversations',
         limit_choices_to={'role': 'worker'},
@@ -62,8 +62,8 @@ class Conversation(models.Model):
         ]
     
     def __str__(self):
-        client_name = self.client.user.get_full_name() or self.client.user.username
-        worker_name = self.worker.user.get_full_name() or self.worker.user.username
+        client_name = self.client.get_full_name() or self.client.username
+        worker_name = self.worker.get_full_name() or self.worker.username
         return f"Conversation: {client_name} ↔ {worker_name}"
     
     def clean(self):
@@ -85,17 +85,17 @@ class Conversation(models.Model):
         """آخر رسالة في المحادثة"""
         return self.messages.order_by('-created_at').first()
     
-    def get_unread_count(self, user_profile):
+    def get_unread_count(self, user):
         """عدد الرسائل غير المقروءة للمستخدم"""
         return self.messages.filter(
             is_read=False
-        ).exclude(sender=user_profile).count()
+        ).exclude(sender=user).count()
     
-    def mark_messages_as_read(self, user_profile):
+    def mark_messages_as_read(self, user):
         """تحديد رسائل المحادثة كمقروءة للمستخدم"""
         unread_messages = self.messages.filter(
             is_read=False
-        ).exclude(sender=user_profile)
+        ).exclude(sender=user)
         
         updated_count = unread_messages.update(
             is_read=True,
@@ -123,7 +123,7 @@ class Message(models.Model):
     )
     
     sender = models.ForeignKey(
-        Profile,
+        User,
         on_delete=models.CASCADE,
         related_name='sent_messages',
         help_text="مرسل الرسالة"
@@ -162,7 +162,7 @@ class Message(models.Model):
         ]
     
     def __str__(self):
-        sender_name = self.sender.user.get_full_name() or self.sender.user.username
+        sender_name = self.sender.get_full_name() or self.sender.username
         return f"Message from {sender_name}: {self.content[:50]}..."
     
     def clean(self):
@@ -196,14 +196,14 @@ class BlockedUser(models.Model):
     Blocked users
     """
     blocker = models.ForeignKey(
-        Profile,
+        User,
         on_delete=models.CASCADE,
         related_name='blocked_users',
         help_text="المستخدم الذي قام بالحظر"
     )
     
     blocked = models.ForeignKey(
-        Profile,
+        User,
         on_delete=models.CASCADE,
         related_name='blocked_by_users',
         help_text="المستخدم المحظور"
@@ -228,8 +228,8 @@ class BlockedUser(models.Model):
         ]
     
     def __str__(self):
-        blocker_name = self.blocker.user.get_full_name() or self.blocker.user.username
-        blocked_name = self.blocked.user.get_full_name() or self.blocked.user.username
+        blocker_name = self.blocker.get_full_name() or self.blocker.username
+        blocked_name = self.blocked.get_full_name() or self.blocked.username
         return f"{blocker_name} blocked {blocked_name}"
     
     def clean(self):
@@ -265,14 +265,14 @@ class Report(models.Model):
     
     # المبلِّغ والمُبلَّغ عنه
     reporter = models.ForeignKey(
-        Profile,
+        User,
         on_delete=models.CASCADE,
         related_name='filed_reports',
         help_text="الشخص الذي قدم التبليغ"
     )
     
     reported_user = models.ForeignKey(
-        Profile,
+        User,
         on_delete=models.CASCADE,
         related_name='received_reports',
         help_text="الشخص المُبلَّغ عنه"
@@ -322,11 +322,12 @@ class Report(models.Model):
     )
     
     resolved_by = models.ForeignKey(
-        Profile,
+        User,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name='resolved_reports',
+        limit_choices_to={'role': 'admin'},
         help_text="الإداري الذي عالج التبليغ"
     )
     
@@ -345,8 +346,8 @@ class Report(models.Model):
         ]
     
     def __str__(self):
-        reporter_name = self.reporter.user.get_full_name() or self.reporter.user.username
-        reported_name = self.reported_user.user.get_full_name() or self.reported_user.user.username
+        reporter_name = self.reporter.get_full_name() or self.reporter.username
+        reported_name = self.reported_user.get_full_name() or self.reported_user.username
         return f"Report: {reporter_name} → {reported_name} ({self.get_reason_display()})"
     
     def clean(self):

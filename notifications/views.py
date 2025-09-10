@@ -8,15 +8,14 @@ from django.db.models import Q, Count
 from django.utils import timezone
 from datetime import timedelta
 
-from .models import Notification, NotificationSettings, NotificationTemplate
+from .models import Notification, NotificationSettings
 from .serializers import (
     NotificationSerializer,
     NotificationListSerializer,
     NotificationSettingsSerializer,
     NotificationStatsSerializer,
     BulkNotificationSerializer,
-    NotificationCreateSerializer,
-    NotificationTemplateSerializer
+    NotificationCreateSerializer
 )
 
 
@@ -28,18 +27,18 @@ class NotificationListView(generics.ListAPIView):
     serializer_class = NotificationListSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['notification_type', 'is_read', 'priority']
+    filterset_fields = ['notification_type', 'is_read']
     
     def get_queryset(self):
         """الحصول على إشعارات المستخدم الحالي فقط"""
-        user_profile = self.request.user.profile
+        user = self.request.user
         
         queryset = Notification.objects.filter(
-            recipient=user_profile
+            recipient=user
         ).select_related(
             'related_task',
-            'related_worker__profile__user',
-            'recipient__user'
+            'related_application',
+            'recipient'
         ).order_by('-created_at')
         
         # فلترة حسب حالة القراءة
@@ -53,11 +52,6 @@ class NotificationListView(generics.ListAPIView):
         if notification_type:
             queryset = queryset.filter(notification_type=notification_type)
         
-        # فلترة حسب الأولوية
-        priority = self.request.query_params.get('priority')
-        if priority:
-            queryset = queryset.filter(priority=priority)
-        
         # فلترة حسب التاريخ
         days = self.request.query_params.get('days')
         if days:
@@ -67,11 +61,6 @@ class NotificationListView(generics.ListAPIView):
                 queryset = queryset.filter(created_at__gte=date_from)
             except ValueError:
                 pass
-        
-        # إزالة الإشعارات منتهية الصلاحية
-        queryset = queryset.filter(
-            Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())
-        )
         
         return queryset
 
@@ -86,7 +75,7 @@ class NotificationDetailView(generics.RetrieveAPIView):
     
     def get_queryset(self):
         """التأكد من أن المستخدم يملك الإشعار"""
-        return Notification.objects.filter(recipient=self.request.user.profile)
+        return Notification.objects.filter(recipient=self.request.user)
     
     def retrieve(self, request, *args, **kwargs):
         """عرض الإشعار وتحديده كمقروء تلقائياً"""
@@ -110,7 +99,7 @@ def mark_notification_as_read(request, notification_id):
     try:
         notification = Notification.objects.get(
             id=notification_id,
-            recipient=request.user.profile
+            recipient=request.user
         )
         notification.mark_as_read()
         
@@ -134,7 +123,7 @@ def mark_notification_as_unread(request, notification_id):
     try:
         notification = Notification.objects.get(
             id=notification_id,
-            recipient=request.user.profile
+            recipient=request.user
         )
         notification.is_read = False
         notification.read_at = None
@@ -157,7 +146,7 @@ def mark_all_notifications_as_read(request):
     Mark all notifications as read
     """
     updated_count = Notification.objects.filter(
-        recipient=request.user.profile,
+        recipient=request.user,
         is_read=False
     ).update(
         is_read=True,
@@ -180,7 +169,7 @@ def delete_notification(request, notification_id):
     try:
         notification = Notification.objects.get(
             id=notification_id,
-            recipient=request.user.profile
+            recipient=request.user
         )
         notification.delete()
         
@@ -210,7 +199,7 @@ def bulk_notification_action(request):
     
     notifications = Notification.objects.filter(
         id__in=notification_ids,
-        recipient=request.user.profile
+        recipient=request.user
     )
     
     if action == 'mark_read':
@@ -250,8 +239,8 @@ class NotificationStatsView(generics.RetrieveAPIView):
     
     def get_object(self):
         """حساب إحصائيات الإشعارات"""
-        user_profile = self.request.user.profile
-        notifications = Notification.objects.filter(recipient=user_profile)
+        user = self.request.user
+        notifications = Notification.objects.filter(recipient=user)
         
         # إحصائيات عامة
         total_notifications = notifications.count()
@@ -286,11 +275,6 @@ class NotificationStatsView(generics.RetrieveAPIView):
             notification_type__in=['payment_received', 'payment_sent']
         ).count()
         
-        # إحصائيات حسب الأولوية
-        high_priority = notifications.filter(priority='high').count()
-        medium_priority = notifications.filter(priority='medium').count()
-        low_priority = notifications.filter(priority='low').count()
-        
         return {
             'total_notifications': total_notifications,
             'unread_notifications': unread_notifications,
@@ -300,9 +284,6 @@ class NotificationStatsView(generics.RetrieveAPIView):
             'task_notifications': task_notifications,
             'message_notifications': message_notifications,
             'payment_notifications': payment_notifications,
-            'high_priority': high_priority,
-            'medium_priority': medium_priority,
-            'low_priority': low_priority,
         }
 
 
@@ -317,13 +298,8 @@ class NotificationSettingsView(generics.RetrieveUpdateAPIView):
     def get_object(self):
         """الحصول على إعدادات الإشعارات أو إنشاؤها"""
         settings, created = NotificationSettings.objects.get_or_create(
-            user=self.request.user.profile,
-            defaults={
-                'notifications_enabled': True,
-                'task_notifications': True,
-                'message_notifications': True,
-                'payment_notifications': True,
-            }
+            user=self.request.user,
+            defaults={'notifications_enabled': True}
         )
         return settings
 
@@ -335,7 +311,7 @@ def notification_types(request):
     قائمة أنواع الإشعارات المتاحة حسب دور المستخدم
     Available notification types based on user role
     """
-    user_role = request.user.profile.role
+    user_role = request.user.role
     
     if user_role == 'client':
         types = [
@@ -352,7 +328,6 @@ def notification_types(request):
             {'type': 'new_task_available', 'name': 'Nouvelle tâche disponible'},
             {'type': 'application_accepted', 'name': 'Candidature acceptée'},
             {'type': 'application_rejected', 'name': 'Candidature rejetée'},
-            {'type': 'task_completed', 'name': 'Tâche confirmée terminée'},
             {'type': 'payment_sent', 'name': 'Paiement envoyé'},
             {'type': 'message_received', 'name': 'Message reçu'},
         ]
@@ -373,7 +348,7 @@ def clear_all_notifications(request):
     Clear all read notifications
     """
     deleted_count = Notification.objects.filter(
-        recipient=request.user.profile,
+        recipient=request.user,
         is_read=True
     ).delete()[0]
     
@@ -384,26 +359,6 @@ def clear_all_notifications(request):
 
 
 # Admin Views (للإدارة)
-class NotificationTemplateListView(generics.ListCreateAPIView):
-    """
-    قائمة وإنشاء قوالب الإشعارات (للإدارة)
-    List and create notification templates (admin only)
-    """
-    queryset = NotificationTemplate.objects.all()
-    serializer_class = NotificationTemplateSerializer
-    permission_classes = [permissions.IsAdminUser]
-
-
-class NotificationTemplateDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """
-    تفاصيل وتحديث قوالب الإشعارات (للإدارة)
-    Template details and updates (admin only)
-    """
-    queryset = NotificationTemplate.objects.all()
-    serializer_class = NotificationTemplateSerializer
-    permission_classes = [permissions.IsAdminUser]
-
-
 @api_view(['POST'])
 @permission_classes([permissions.IsAdminUser])
 def create_notification(request):
@@ -419,6 +374,6 @@ def create_notification(request):
     return Response({
         'message': 'Notification créée avec succès',
         'notification_id': notification.id,
-        'recipient': notification.recipient.user.username,
+        'recipient': notification.recipient.username,
         'type': notification.notification_type
     }, status=status.HTTP_201_CREATED)

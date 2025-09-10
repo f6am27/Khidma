@@ -62,4 +62,6 @@ urlpatterns = [
         views.blocked_users_list,
         name='blocked-users'
     ),
+    path('start-conversation/', views.start_conversation, name='start_conversation'),
+
 ]

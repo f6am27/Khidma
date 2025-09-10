@@ -3,7 +3,7 @@ from rest_framework import serializers
 from django.utils import timezone
 from django.db.models import Q
 from .models import Conversation, Message, BlockedUser, Report
-from accounts.models import Profile
+from users.models import User
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
@@ -16,14 +16,14 @@ class UserProfileSerializer(serializers.ModelSerializer):
     is_online = serializers.SerializerMethodField()
     
     class Meta:
-        model = Profile
+        model = User
         fields = ['id', 'full_name', 'role', 'profile_image_url', 'is_online']
     
     def get_full_name(self, obj):
         """الحصول على الاسم الكامل"""
-        if obj.user.first_name and obj.user.last_name:
-            return f"{obj.user.first_name} {obj.user.last_name}"
-        return obj.user.username
+        if obj.first_name and obj.last_name:
+            return f"{obj.first_name} {obj.last_name}"
+        return obj.username
     
     def get_profile_image_url(self, obj):
         """الحصول على رابط صورة الملف الشخصي"""
@@ -41,8 +41,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
     
     def get_is_online(self, obj):
         """حالة الاتصال"""
-        if obj.user.last_login:
-            time_diff = timezone.now() - obj.user.last_login
+        if obj.last_login:
+            time_diff = timezone.now() - obj.last_login
             return time_diff.total_seconds() < 300  # 5 دقائق
         return False
 
@@ -68,7 +68,7 @@ class MessageSerializer(serializers.ModelSerializer):
         """هل الرسالة من المستخدم الحالي"""
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            return obj.sender == request.user.profile
+            return obj.sender == request.user
         return False
     
     def get_time_ago(self, obj):
@@ -114,7 +114,7 @@ class ConversationSerializer(serializers.ModelSerializer):
         """المشارك الآخر في المحادثة"""
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            current_user = request.user.profile
+            current_user = request.user
             if current_user == obj.client:
                 return UserProfileSerializer(obj.worker, context=self.context).data
             else:
@@ -127,8 +127,8 @@ class ConversationSerializer(serializers.ModelSerializer):
         if last_message:
             return {
                 'content': last_message.content,
-                'sender_name': last_message.sender.user.get_full_name() or last_message.sender.user.username,
-                'is_from_me': last_message.sender == self.context.get('request').user.profile,
+                'sender_name': last_message.sender.get_full_name() or last_message.sender.username,
+                'is_from_me': last_message.sender == self.context.get('request').user,
                 'created_at': last_message.created_at
             }
         return None
@@ -137,7 +137,7 @@ class ConversationSerializer(serializers.ModelSerializer):
         """عدد الرسائل غير المقروءة"""
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            return obj.get_unread_count(request.user.profile)
+            return obj.get_unread_count(request.user)
         return 0
     
     def get_time_ago(self, obj):
@@ -220,15 +220,15 @@ class CreateReportSerializer(serializers.ModelSerializer):
     def validate_reported_user_id(self, value):
         """التحقق من المستخدم المُبلَّغ عنه"""
         try:
-            profile = Profile.objects.get(id=value)
+            user = User.objects.get(id=value)
             request = self.context.get('request')
             
-            if profile == request.user.profile:
+            if user == request.user:
                 raise serializers.ValidationError("Vous ne pouvez pas vous signaler vous-même")
             
             return value
             
-        except Profile.DoesNotExist:
+        except User.DoesNotExist:
             raise serializers.ValidationError("Utilisateur non trouvé")
     
     def create(self, validated_data):
@@ -238,7 +238,7 @@ class CreateReportSerializer(serializers.ModelSerializer):
         conversation_id = validated_data.pop('conversation_id', None)
         
         return Report.objects.create(
-            reporter=request.user.profile,
+            reporter=request.user,
             reported_user_id=reported_user_id,
             conversation_id=conversation_id,
             **validated_data
@@ -262,21 +262,21 @@ class BlockUserSerializer(serializers.ModelSerializer):
     def validate_blocked_user_id(self, value):
         """التحقق من المستخدم المحظور"""
         try:
-            profile = Profile.objects.get(id=value)
+            user = User.objects.get(id=value)
             request = self.context.get('request')
             
-            if profile == request.user.profile:
+            if user == request.user:
                 raise serializers.ValidationError("Vous ne pouvez pas vous bloquer vous-même")
             
             if BlockedUser.objects.filter(
-                blocker=request.user.profile,
-                blocked=profile
+                blocker=request.user,
+                blocked=user
             ).exists():
                 raise serializers.ValidationError("Cet utilisateur est déjà bloqué")
             
             return value
             
-        except Profile.DoesNotExist:
+        except User.DoesNotExist:
             raise serializers.ValidationError("Utilisateur non trouvé")
     
     def create(self, validated_data):
@@ -285,7 +285,7 @@ class BlockUserSerializer(serializers.ModelSerializer):
         blocked_user_id = validated_data.pop('blocked_user_id')
         
         return BlockedUser.objects.create(
-            blocker=request.user.profile,
+            blocker=request.user,
             blocked_id=blocked_user_id,
             **validated_data
         )

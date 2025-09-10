@@ -1,57 +1,7 @@
-# workers/admin.py
+# workers/admin.py - مُصحح للنظام الجديد
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import WorkerProfile, WorkerService, WorkerGallery, WorkerExperience
-
-
-@admin.register(WorkerProfile)
-class WorkerProfileAdmin(admin.ModelAdmin):
-    list_display = [
-        'username', 'phone', 'service_area', 'total_jobs_completed', 
-        'average_rating', 'is_verified', 'is_available', 'is_online'
-    ]
-    list_filter = [
-        'is_verified', 'is_available', 'is_online', 
-        'created_at', 'average_rating'
-    ]
-    search_fields = [
-        'profile__user__username', 'profile__phone', 
-        'service_area', 'bio'
-    ]
-    ordering = ['-created_at']
-    readonly_fields = ['created_at', 'updated_at', 'last_seen']
-    
-    fieldsets = (
-        ('Basic Information', {
-            'fields': ('profile', 'bio', 'service_area', 'profile_image')
-        }),
-        ('Availability', {
-            'fields': ('available_days', 'work_start_time', 'work_end_time')
-        }),
-        ('Location', {
-            'fields': ('latitude', 'longitude'),
-            'classes': ('collapse',)
-        }),
-        ('Statistics', {
-            'fields': ('total_jobs_completed', 'average_rating', 'total_reviews'),
-            'classes': ('collapse',)
-        }),
-        ('Status', {
-            'fields': ('is_verified', 'is_available', 'is_online')
-        }),
-        ('Timestamps', {
-            'fields': ('created_at', 'updated_at', 'last_seen'),
-            'classes': ('collapse',)
-        })
-    )
-    
-    def username(self, obj):
-        return obj.profile.user.username
-    username.short_description = 'Username'
-    
-    def phone(self, obj):
-        return obj.profile.phone
-    phone.short_description = 'Phone'
+from .models import WorkerService, WorkerGallery, WorkerSettings
 
 
 class WorkerServiceInline(admin.TabularInline):
@@ -69,33 +19,34 @@ class WorkerGalleryInline(admin.TabularInline):
 @admin.register(WorkerService)
 class WorkerServiceAdmin(admin.ModelAdmin):
     list_display = [
-        'worker_username', 'category', 'base_price', 'price_type', 
+        'worker_name', 'category', 'base_price', 'price_type', 
         'is_active', 'created_at'
     ]
     list_filter = ['price_type', 'is_active', 'category', 'created_at']
     search_fields = [
-        'worker__profile__user__username', 'category__name', 'description'
+        'worker__first_name', 'worker__last_name', 'worker__phone', 
+        'category__name', 'description'
     ]
     ordering = ['-created_at']
     
-    def worker_username(self, obj):
-        return obj.worker.profile.user.username
-    worker_username.short_description = 'Worker'
+    def worker_name(self, obj):
+        return obj.worker.get_full_name() or obj.worker.phone
+    worker_name.short_description = 'Worker'
 
 
 @admin.register(WorkerGallery)
 class WorkerGalleryAdmin(admin.ModelAdmin):
     list_display = [
-        'worker_username', 'caption', 'service_category', 
+        'worker_name', 'caption', 'service_category', 
         'is_featured', 'image_preview', 'created_at'
     ]
     list_filter = ['is_featured', 'service_category', 'created_at']
-    search_fields = ['worker__profile__user__username', 'caption']
+    search_fields = ['worker__first_name', 'worker__last_name', 'caption']
     ordering = ['-created_at']
     
-    def worker_username(self, obj):
-        return obj.worker.profile.user.username
-    worker_username.short_description = 'Worker'
+    def worker_name(self, obj):
+        return obj.worker.get_full_name() or obj.worker.phone
+    worker_name.short_description = 'Worker'
     
     def image_preview(self, obj):
         if obj.image:
@@ -107,19 +58,48 @@ class WorkerGalleryAdmin(admin.ModelAdmin):
     image_preview.short_description = 'Preview'
 
 
-@admin.register(WorkerExperience)
-class WorkerExperienceAdmin(admin.ModelAdmin):
+@admin.register(WorkerSettings)
+class WorkerSettingsAdmin(admin.ModelAdmin):
     list_display = [
-        'worker_username', 'title', 'start_date', 'end_date', 'created_at'
+        'worker_name', 'language', 'theme_preference', 'profile_visibility',
+        'auto_accept_jobs', 'max_daily_jobs', 'updated_at'
     ]
-    list_filter = ['start_date', 'end_date', 'created_at']
-    search_fields = ['worker__profile__user__username', 'title', 'description']
-    ordering = ['-start_date']
+    list_filter = [
+        'language', 'theme_preference', 'profile_visibility',
+        'auto_accept_jobs', 'instant_booking'
+    ]
+    search_fields = ['worker__first_name', 'worker__last_name']
+    readonly_fields = ['created_at', 'updated_at']
     
-    def worker_username(self, obj):
-        return obj.worker.profile.user.username
-    worker_username.short_description = 'Worker'
-
-
-# Enhance the WorkerProfile admin with inlines
-WorkerProfileAdmin.inlines = [WorkerServiceInline, WorkerGalleryInline]
+    fieldsets = (
+        ('Worker', {
+            'fields': ('worker',)
+        }),
+        ('Notification Settings', {
+            'fields': (
+                'push_notifications', 'email_notifications', 'sms_notifications'
+            )
+        }),
+        ('App Preferences', {
+            'fields': ('theme_preference', 'language')
+        }),
+        ('Work Settings', {
+            'fields': (
+                'auto_accept_jobs', 'max_daily_jobs', 'instant_booking'
+            )
+        }),
+        ('Privacy Settings', {
+            'fields': ('profile_visibility',)
+        }),
+        ('Location Settings', {
+            'fields': ('travel_radius_km',)
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        })
+    )
+    
+    def worker_name(self, obj):
+        return obj.worker.get_full_name() or obj.worker.phone
+    worker_name.short_description = 'Worker'

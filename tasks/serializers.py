@@ -1,10 +1,8 @@
 # tasks/serializers.py
 from rest_framework import serializers
-from django.contrib.auth.models import User
 from django.utils import timezone
 from .models import ServiceRequest, TaskApplication, TaskReview, TaskNotification
-from accounts.models import Profile
-from workers.models import WorkerProfile
+from users.models import User
 from services.serializers import ServiceCategorySerializer
 
 
@@ -47,7 +45,7 @@ class TaskApplicationSerializer(serializers.ModelSerializer):
     
     def get_name(self, obj):
         """Worker full name"""
-        user = obj.worker.profile.user
+        user = obj.worker
         if user.first_name and user.last_name:
             return f"{user.first_name} {user.last_name}"
         return user.username
@@ -89,7 +87,7 @@ class ServiceRequestListSerializer(serializers.ModelSerializer):
     def get_assignedProvider(self, obj):
         """Assigned worker name"""
         if obj.assigned_worker:
-            user = obj.assigned_worker.profile.user
+            user = obj.assigned_worker
             if user.first_name and user.last_name:
                 return f"{user.first_name} {user.last_name}"
             return user.username
@@ -141,7 +139,7 @@ class ServiceRequestDetailSerializer(serializers.ModelSerializer):
     
     def get_client_name(self, obj):
         """Client full name"""
-        user = obj.client.user
+        user = obj.client
         if user.first_name and user.last_name:
             return f"{user.first_name} {user.last_name}"
         return user.username
@@ -152,7 +150,7 @@ class ServiceRequestDetailSerializer(serializers.ModelSerializer):
             return {
                 'id': obj.assigned_worker.id,
                 'name': self.get_worker_name(obj.assigned_worker),
-                'phone': obj.assigned_worker.profile.phone,
+                'phone': obj.assigned_worker.phone,
                 'rating': float(obj.assigned_worker.average_rating),
                 'completed_jobs': obj.assigned_worker.total_jobs_completed,
                 'is_online': obj.assigned_worker.is_online,
@@ -162,7 +160,7 @@ class ServiceRequestDetailSerializer(serializers.ModelSerializer):
     
     def get_worker_name(self, worker):
         """Helper to get worker name"""
-        user = worker.profile.user
+        user = worker
         if user.first_name and user.last_name:
             return f"{user.first_name} {user.last_name}"
         return user.username
@@ -213,32 +211,25 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
     def validate_preferred_time(self, value):
         """Validate preferred time format"""
         import re
-        # Allow formats like: "9:00 AM", "14:30", "2 PM", "Matin", "Après-midi", etc.
         time_patterns = [
-            r'^\d{1,2}:\d{2}\s?(AM|PM|am|pm)$',  # 9:00 AM, 2:30 PM
-            r'^\d{1,2}\s?(AM|PM|am|pm)$',        # 9 AM, 2 PM
-            r'^\d{1,2}:\d{2}$',                  # 14:30, 09:15
-            r'^(Matin|Après-midi|Soir|matin|après-midi|soir)$',  # French time periods
-            r'^(Morning|Afternoon|Evening|morning|afternoon|evening)$',  # English time periods
-            r'.*'  # Allow any other format for flexibility
+            r'^\d{1,2}:\d{2}\s?(AM|PM|am|pm)$',
+            r'^\d{1,2}\s?(AM|PM|am|pm)$',
+            r'^\d{1,2}:\d{2}$',
+            r'^(Matin|Après-midi|Soir|matin|après-midi|soir)$',
+            r'^(Morning|Afternoon|Evening|morning|afternoon|evening)$',
+            r'.*'
         ]
-        
-        # Check if any pattern matches
         for pattern in time_patterns:
             if re.match(pattern, value.strip()):
                 return value.strip()
-        
-        return value.strip()  # Return as-is for maximum flexibility
+        return value.strip()
     
     def validate(self, data):
         """Cross-field validation"""
         latitude = data.get('latitude')
         longitude = data.get('longitude')
-        
-        # If coordinates provided, both must be present
         if (latitude is not None and longitude is None) or (longitude is not None and latitude is None):
             raise serializers.ValidationError("Les coordonnées latitude et longitude doivent être fournies ensemble")
-        
         return data
     
     def validate_title(self, value):
@@ -256,7 +247,7 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         """Create service request with client from request context"""
         request = self.context['request']
-        client_profile = request.user.profile
+        client = request.user
         
         # Handle serviceType field (convert to service_category_id)
         service_type = validated_data.pop('serviceType', None)
@@ -268,16 +259,14 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
             except ServiceCategory.DoesNotExist:
                 pass
         
-        # Handle coordinates if provided
         latitude = validated_data.pop('latitude', None)
         longitude = validated_data.pop('longitude', None)
         
         service_request = ServiceRequest.objects.create(
-            client=client_profile,
+            client=client,
             **validated_data
         )
         
-        # Save coordinates if provided
         if latitude and longitude:
             service_request.latitude = latitude
             service_request.longitude = longitude
@@ -291,20 +280,13 @@ class AvailableTaskSerializer(serializers.ModelSerializer):
     Available tasks for workers to view and apply
     المهام المتاحة للعمال للعرض والتقدم
     """
-    # Client info (limited for privacy)
     client_name = serializers.SerializerMethodField()
     client_rating = serializers.SerializerMethodField()
-    
-    # Service info
     serviceType = serializers.CharField(source='service_category.name', read_only=True)
     category = serializers.CharField(source='service_category.name', read_only=True)
-    
-    # Task details
     createdAt = serializers.DateTimeField(source='created_at', read_only=True)
     applicantsCount = serializers.IntegerField(source='applications_count', read_only=True)
     distance = serializers.SerializerMethodField()
-    
-    # Application status for current worker
     has_applied = serializers.SerializerMethodField()
     application_status = serializers.SerializerMethodField()
     
@@ -320,30 +302,28 @@ class AvailableTaskSerializer(serializers.ModelSerializer):
     
     def get_client_name(self, obj):
         """Client name (first name only for privacy)"""
-        user = obj.client.user
+        user = obj.client
         if user.first_name:
             return user.first_name
         return user.username[:3] + "***"
     
     def get_client_rating(self, obj):
         """Client average rating (mock for now)"""
-        # TODO: Implement client rating system
         return 4.5
     
     def get_distance(self, obj):
         """Distance from worker location (mock for now)"""
-        # TODO: Calculate real distance based on worker location
         import random
         return f"{random.uniform(0.5, 10.0):.1f} km"
     
     def get_has_applied(self, obj):
         """Check if current worker has applied"""
         request = self.context.get('request')
-        if request and hasattr(request.user, 'profile'):
+        if request:
             try:
-                worker_profile = request.user.profile.worker_profile
+                worker = request.user
                 return obj.applications.filter(
-                    worker=worker_profile,
+                    worker=worker,
                     is_active=True
                 ).exists()
             except:
@@ -353,11 +333,11 @@ class AvailableTaskSerializer(serializers.ModelSerializer):
     def get_application_status(self, obj):
         """Current worker's application status"""
         request = self.context.get('request')
-        if request and hasattr(request.user, 'profile'):
+        if request:
             try:
-                worker_profile = request.user.profile.worker_profile
+                worker = request.user
                 application = obj.applications.filter(
-                    worker=worker_profile,
+                    worker=worker,
                     is_active=True
                 ).first()
                 return application.application_status if application else None
@@ -367,35 +347,33 @@ class AvailableTaskSerializer(serializers.ModelSerializer):
 
 
 class TaskApplicationCreateSerializer(serializers.ModelSerializer):
-    """
-    Create task application serializer (simplified)
-    محول إنشاء تقدم للمهمة (مبسط)
-    """
-    class Meta:
-        model = TaskApplication
-        fields = ['application_message']
-        extra_kwargs = {
-            'application_message': {'required': False, 'allow_blank': True}
-        }
-    
-    def create(self, validated_data):
-        """Create application with worker and service request from context"""
-        service_request = self.context['service_request']
-        worker_profile = self.context['worker_profile']
-        
-        # Use default message if none provided
-        if not validated_data.get('application_message'):
-            import random
-            validated_data['application_message'] = random.choice(
-                TaskApplication.MESSAGE_TEMPLATES
-            )
-        
-        return TaskApplication.objects.create(
-            service_request=service_request,
-            worker=worker_profile,
-            **validated_data
-        )
-
+   """
+   Create task application serializer (simplified)
+   محول إنشاء تقدم للمهمة (مبسط)
+   """
+   class Meta:
+       model = TaskApplication
+       fields = ['application_message']
+       extra_kwargs = {
+           'application_message': {'required': False, 'allow_blank': True}
+       }
+   
+   def create(self, validated_data):
+       """Create application with worker and service request from validated_data"""
+       service_request = validated_data.pop('service_request')
+       worker = validated_data.pop('worker')
+       
+       if not validated_data.get('application_message'):
+           import random
+           validated_data['application_message'] = random.choice(
+               TaskApplication.MESSAGE_TEMPLATES
+           )
+       
+       return TaskApplication.objects.create(
+           service_request=service_request,
+           worker=worker,
+           **validated_data
+       )
 
 class TaskReviewSerializer(serializers.ModelSerializer):
     """
@@ -424,14 +402,14 @@ class TaskReviewSerializer(serializers.ModelSerializer):
     
     def get_client_name(self, obj):
         """Client name"""
-        user = obj.client.user
+        user = obj.client
         if user.first_name and user.last_name:
             return f"{user.first_name} {user.last_name}"
         return user.username
     
     def get_worker_name(self, obj):
         """Worker name"""
-        user = obj.worker.profile.user
+        user = obj.worker
         if user.first_name and user.last_name:
             return f"{user.first_name} {user.last_name}"
         return user.username
