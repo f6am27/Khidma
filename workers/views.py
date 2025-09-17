@@ -1,4 +1,5 @@
-# workers/views.py - النسخة النهائية الكاملة
+# workers/views.py - النسخة النهائية بعد إضافة APIs جديدة للمواقع
+
 from rest_framework import generics, status, filters
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -7,6 +8,9 @@ from rest_framework.exceptions import ValidationError, PermissionDenied
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Q, Avg, Min, Max, Sum, Count
 from math import radians, cos, sin, asin, sqrt
+from django.utils import timezone
+from datetime import timedelta
+
 from .models import WorkerService, WorkerSettings
 from .serializers import (
     WorkerProfileListSerializer, 
@@ -14,17 +18,18 @@ from .serializers import (
     WorkerProfileSerializer,
     WorkerProfileUpdateSerializer,
     WorkerServiceSerializer,
-    WorkerSettingsSerializer
+    WorkerSettingsSerializer,
+    WorkerLocationSerializer,
+    LocationToggleSerializer
 )
 from users.models import User
 from services.models import ServiceCategory
+from tasks.models import ServiceRequest
+from tasks.serializers import AvailableTaskSerializer
 
+# ==================== النسخة الأصلية ====================
 
 class WorkerListView(generics.ListAPIView):
-    """
-    List workers with filtering and search (for client home screen)
-    قائمة العمال مع الفلترة والبحث (لشاشة العميل الرئيسية)
-    """
     queryset = User.objects.filter(
         role='worker',
         is_verified=True,
@@ -36,24 +41,20 @@ class WorkerListView(generics.ListAPIView):
     permission_classes = [AllowAny]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     
-    # Search fields
     search_fields = [
         'first_name', 'last_name', 'phone',
         'worker_profile__bio', 'worker_profile__service_area', 
         'worker_services__category__name'
     ]
     
-    # Filter fields
     filterset_fields = ['worker_profile__is_verified', 'worker_profile__is_online']
     
-    # Ordering options
     ordering_fields = ['worker_profile__average_rating', 'worker_profile__total_jobs_completed', 'worker_profile__last_seen']
     ordering = ['-worker_profile__is_online', '-worker_profile__average_rating']
 
     def get_queryset(self):
         queryset = super().get_queryset()
         
-        # Filter by service category
         category = self.request.query_params.get('category', None)
         if category and category not in ['Toutes Catégories', 'All Categories']:
             if category.isdigit():
@@ -64,14 +65,12 @@ class WorkerListView(generics.ListAPIView):
                     Q(worker_services__category__name_ar__icontains=category)
                 )
         
-        # Filter by area/location
         area = self.request.query_params.get('area', None)
         if area and area not in ['Toutes Zones', 'All Areas']:
             queryset = queryset.filter(
                 Q(worker_profile__service_area__icontains=area)
             )
         
-        # Filter by price range
         min_price = self.request.query_params.get('min_price', None)
         max_price = self.request.query_params.get('max_price', None)
         if min_price:
@@ -79,12 +78,10 @@ class WorkerListView(generics.ListAPIView):
         if max_price:
             queryset = queryset.filter(worker_services__base_price__lte=max_price)
         
-        # Filter by rating
         min_rating = self.request.query_params.get('min_rating', None)
         if min_rating:
             queryset = queryset.filter(worker_profile__average_rating__gte=min_rating)
         
-        # Filter by availability (online now)
         online_only = self.request.query_params.get('online_only', None)
         if online_only and online_only.lower() == 'true':
             queryset = queryset.filter(worker_profile__is_online=True)
@@ -94,7 +91,6 @@ class WorkerListView(generics.ListAPIView):
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
         
-        # Custom sorting options
         sort_by = request.query_params.get('sort_by', None)
         
         if sort_by == 'price_asc':
@@ -106,7 +102,6 @@ class WorkerListView(generics.ListAPIView):
         elif sort_by == 'experience':
             queryset = queryset.order_by('-worker_profile__total_jobs_completed')
         elif sort_by == 'nearest':
-            # Distance-based sorting
             client_lat = request.query_params.get('lat')
             client_lng = request.query_params.get('lng')
             
@@ -134,7 +129,6 @@ class WorkerListView(generics.ListAPIView):
                 except (ValueError, TypeError):
                     pass
         
-        # Handle pagination for sorted queryset
         if sort_by == 'nearest' and isinstance(queryset, list):
             page_size = self.get_paginator().page_size
             page_number = request.query_params.get('page', 1)
@@ -153,7 +147,6 @@ class WorkerListView(generics.ListAPIView):
                 'results': serializer.data
             })
         
-        # Standard pagination
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
@@ -166,7 +159,6 @@ class WorkerListView(generics.ListAPIView):
         })
 
     def calculate_distance(self, lat1, lng1, lat2, lng2):
-        """Calculate distance between two points using Haversine formula"""
         lat1, lng1, lat2, lng2 = map(radians, [lat1, lng1, lat2, lng2])
         dlat = lat2 - lat1
         dlng = lng2 - lng1
@@ -177,10 +169,6 @@ class WorkerListView(generics.ListAPIView):
 
 
 class WorkerDetailView(generics.RetrieveAPIView):
-    """
-    Get detailed worker profile (for worker detail screen)
-    الحصول على ملف العامل المفصل (لشاشة تفاصيل العامل)
-    """
     queryset = User.objects.filter(
         role='worker',
         is_verified=True,
@@ -196,26 +184,16 @@ class WorkerDetailView(generics.RetrieveAPIView):
 
 
 class WorkerProfileView(generics.RetrieveUpdateAPIView):
-    """
-    Worker's own profile view and update
-    عرض وتحديث ملف العامل الشخصي
-    """
     serializer_class = WorkerProfileSerializer
     permission_classes = [IsAuthenticated]
     
     def get_object(self):
-        # Ensure user is a worker
         if self.request.user.role != 'worker':
             raise PermissionDenied("Only workers can access this endpoint")
-        
         return self.request.user
 
 
 class WorkerProfileUpdateView(generics.UpdateAPIView):
-    """
-    Update worker profile (for profile edit)
-    تحديث ملف العامل (لتعديل الملف)
-    """
     serializer_class = WorkerProfileUpdateSerializer
     permission_classes = [IsAuthenticated]
     
@@ -226,10 +204,6 @@ class WorkerProfileUpdateView(generics.UpdateAPIView):
 
 
 class WorkerServiceListView(generics.ListAPIView):
-    """
-    List services for a specific worker
-    قائمة خدمات عامل معين
-    """
     serializer_class = WorkerServiceSerializer
     permission_classes = [AllowAny]
     
@@ -244,19 +218,13 @@ class WorkerServiceListView(generics.ListAPIView):
 
 
 class WorkerSettingsView(generics.RetrieveUpdateAPIView):
-    """
-    Get or update worker settings
-    عرض أو تحديث إعدادات العامل
-    """
     serializer_class = WorkerSettingsSerializer
     permission_classes = [IsAuthenticated]
     
     def get_object(self):
-        # Ensure user is a worker
         if self.request.user.role != 'worker':
             raise PermissionDenied("Only workers can access settings")
         
-        # Get or create worker settings
         settings, created = WorkerSettings.objects.get_or_create(
             worker=self.request.user,
             defaults={
@@ -279,10 +247,6 @@ class WorkerSettingsView(generics.RetrieveUpdateAPIView):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def worker_search_filters(request):
-    """
-    Get available filter options for Flutter worker search
-    الحصول على خيارات الفلترة المتاحة لبحث العمال في Flutter
-    """
     categories = ServiceCategory.objects.filter(
         is_active=True,
         workerservice__isnull=False
@@ -346,10 +310,6 @@ def worker_search_filters(request):
 @api_view(['GET']) 
 @permission_classes([AllowAny])
 def worker_stats(request):
-    """
-    Get Flutter-compatible worker statistics
-    إحصائيات العمال متوافقة مع Flutter
-    """
     total_workers = User.objects.filter(
         role='worker',
         is_verified=True,
@@ -405,3 +365,236 @@ def worker_stats(request):
         'total_jobs_completed': total_jobs or 0,
         'top_categories': list(top_categories)
     })
+
+# ==================== APIs الموقع الجديدة ====================
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def toggle_location_sharing(request):
+    if request.user.role != 'worker':
+        raise PermissionDenied("هذه الخدمة متاحة للعمال فقط")
+    
+    if not hasattr(request.user, 'worker_profile'):
+        raise ValidationError("ملف العامل غير مكتمل")
+    
+    serializer = LocationToggleSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response({'error': 'بيانات غير صحيحة', 'details': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+    
+    enabled = serializer.validated_data['enabled']
+    worker_profile = request.user.worker_profile
+    previous_status = worker_profile.location_sharing_enabled
+    new_status = worker_profile.toggle_location_sharing(enabled)
+    
+    return Response({
+        'success': True,
+        'message': f'تم {"تفعيل" if new_status else "إيقاف"} مشاركة الموقع بنجاح',
+        'data': {
+            'location_sharing_enabled': new_status,
+            'previous_status': previous_status,
+            'location_status': worker_profile.location_status,
+            'updated_at': worker_profile.location_sharing_updated_at
+        }
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated])
+def update_current_location(request):
+    if request.user.role != 'worker':
+        raise PermissionDenied("هذه الخدمة متاحة للعمال فقط")
+    
+    if not hasattr(request.user, 'worker_profile'):
+        raise ValidationError("ملف العامل غير مكتمل")
+    
+    worker_profile = request.user.worker_profile
+    
+    if not worker_profile.location_sharing_enabled:
+        return Response({'error': 'مشاركة الموقع غير مفعلة','message': 'يجب تفعيل مشاركة الموقع أولاً'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    serializer = WorkerLocationSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response({'error': 'بيانات غير صحيحة', 'details': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+    
+    latitude = serializer.validated_data.get('current_latitude')
+    longitude = serializer.validated_data.get('current_longitude') 
+    accuracy = serializer.validated_data.get('location_accuracy')
+    
+    if latitude is None or longitude is None:
+        return Response({'error': 'إحداثيات غير مكتملة','message': 'يجب تقديم خط العرض والطول'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    success = worker_profile.update_current_location(latitude, longitude, accuracy)
+    if not success:
+        return Response({'error': 'فشل في التحديث','message': 'تعذر تحديث الموقع'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    return Response({
+        'success': True,
+        'message': 'تم تحديث الموقع بنجاح',
+        'data': {
+            'current_latitude': float(worker_profile.current_latitude),
+            'current_longitude': float(worker_profile.current_longitude),
+            'location_accuracy': worker_profile.location_accuracy,
+            'location_last_updated': worker_profile.location_last_updated,
+            'location_status': worker_profile.location_status
+        }
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_location_status(request):
+    if request.user.role != 'worker':
+        raise PermissionDenied("هذه الخدمة متاحة للعمال فقط")
+    
+    if not hasattr(request.user, 'worker_profile'):
+        return Response({'error': 'ملف العامل غير مكتمل'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    worker_profile = request.user.worker_profile
+    worker_profile.update_location_status()
+    
+    return Response({
+        'success': True,
+        'data': {
+            'location_sharing_enabled': worker_profile.location_sharing_enabled,
+            'location_status': worker_profile.location_status,
+            'current_latitude': float(worker_profile.current_latitude) if worker_profile.current_latitude else None,
+            'current_longitude': float(worker_profile.current_longitude) if worker_profile.current_longitude else None,
+            'location_accuracy': worker_profile.location_accuracy,
+            'location_last_updated': worker_profile.location_last_updated,
+            'location_sharing_updated_at': worker_profile.location_sharing_updated_at,
+            'is_location_fresh': worker_profile.is_location_fresh(),
+            'is_currently_available': worker_profile.is_currently_available_with_location
+        }
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_nearby_tasks(request):
+    if request.user.role != 'worker':
+        raise PermissionDenied("هذه الخدمة متاحة للعمال فقط")
+    
+    if not hasattr(request.user, 'worker_profile'):
+        return Response({'error': 'ملف العامل غير مكتمل'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    worker_profile = request.user.worker_profile
+    if not worker_profile.location_sharing_enabled or not worker_profile.current_latitude:
+        return Response({'error': 'الموقع غير متاح','message': 'يجب تفعيل مشاركة الموقع وتحديث موقعك الحالي'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    distance_max = float(request.query_params.get('distance_max', 30))
+    
+    tasks_queryset = ServiceRequest.objects.filter(status='published').select_related('client', 'service_category')
+    tasks_with_location = tasks_queryset.filter(latitude__isnull=False, longitude__isnull=False)
+    
+    nearby_tasks = []
+    worker_lat = float(worker_profile.current_latitude)
+    worker_lng = float(worker_profile.current_longitude)
+    
+    for task in tasks_with_location:
+        distance = worker_profile.calculate_distance_to(float(task.latitude), float(task.longitude))
+        if distance and distance <= distance_max:
+            task.calculated_distance = distance
+            nearby_tasks.append(task)
+    
+    nearby_tasks.sort(key=lambda x: x.calculated_distance)
+    
+    from django.core.paginator import Paginator
+    paginator = Paginator(nearby_tasks, 20)
+    page_number = request.query_params.get('page', 1)
+    page_obj = paginator.get_page(page_number)
+    
+    serializer = AvailableTaskSerializer(page_obj.object_list, many=True, context={'request': request})
+    
+    return Response({
+        'success': True,
+        'message': f'تم العثور على {len(nearby_tasks)} مهمة قريبة',
+        'data': {
+            'worker_location': {'latitude': worker_lat, 'longitude': worker_lng, 'last_updated': worker_profile.location_last_updated},
+            'filter_applied': {'max_distance_km': distance_max, 'total_tasks_found': len(nearby_tasks)},
+            'pagination': {
+                'current_page': page_obj.number,
+                'total_pages': paginator.num_pages,
+                'total_count': len(nearby_tasks),
+                'has_next': page_obj.has_next(),
+                'has_previous': page_obj.has_previous()
+            },
+            'tasks': serializer.data
+        }
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_nearby_workers(request):
+    if request.user.role != 'client':
+        raise PermissionDenied("هذه الخدمة متاحة للعملاء فقط")
+    
+    client_lat = request.query_params.get('lat')
+    client_lng = request.query_params.get('lng')
+    
+    if not (client_lat and client_lng):
+        return Response({'error': 'إحداثيات مطلوبة','message': 'يجب تقديم lat و lng لموقع العميل'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    try:
+        client_lat = float(client_lat)
+        client_lng = float(client_lng)
+    except (ValueError, TypeError):
+        return Response({'error': 'إحداثيات غير صحيحة','message': 'lat و lng يجب أن تكون أرقام صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    distance_max = float(request.query_params.get('distance_max', 30))
+    category = request.query_params.get('category')
+    min_rating = request.query_params.get('min_rating')
+    
+    workers_queryset = User.objects.filter(
+        role='worker',
+        is_verified=True,
+        onboarding_completed=True,
+        worker_profile__is_available=True,
+        worker_profile__location_sharing_enabled=True,
+        worker_profile__location_status='active',
+        worker_profile__current_latitude__isnull=False,
+        worker_profile__current_longitude__isnull=False
+    ).select_related('worker_profile').prefetch_related('worker_services__category')
+    
+    if category:
+        workers_queryset = workers_queryset.filter(worker_services__category__name__icontains=category)
+    
+    if min_rating:
+        try:
+            min_rating_float = float(min_rating)
+            workers_queryset = workers_queryset.filter(worker_profile__average_rating__gte=min_rating_float)
+        except (ValueError, TypeError):
+            pass
+    
+    nearby_workers = []
+    for worker in workers_queryset:
+        distance = worker.worker_profile.calculate_distance_to(client_lat, client_lng)
+        if distance and distance <= distance_max:
+            worker.calculated_distance = distance
+            nearby_workers.append(worker)
+    
+    nearby_workers.sort(key=lambda x: x.calculated_distance)
+    
+    from django.core.paginator import Paginator
+    paginator = Paginator(nearby_workers, 20)
+    page_number = request.query_params.get('page', 1)
+    page_obj = paginator.get_page(page_number)
+    
+    serializer = WorkerProfileListSerializer(page_obj.object_list, many=True, context={'request': request})
+    
+    return Response({
+        'success': True,
+        'message': f'تم العثور على {len(nearby_workers)} عامل قريب',
+        'data': {
+            'client_location': {'latitude': client_lat, 'longitude': client_lng},
+            'filter_applied': {'max_distance_km': distance_max,'category_filter': category,'min_rating_filter': min_rating,'total_workers_found': len(nearby_workers)},
+            'pagination': {
+                'current_page': page_obj.number,
+                'total_pages': paginator.num_pages,
+                'total_count': len(nearby_workers),
+                'has_next': page_obj.has_next(),
+                'has_previous': page_obj.has_previous()
+            },
+            'workers': serializer.data
+        }
+    }, status=status.HTTP_200_OK)

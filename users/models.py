@@ -3,6 +3,8 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.core.exceptions import ValidationError
+from django.utils import timezone
+from math import radians, cos, sin, asin, sqrt
 from .managers import UserManager
 
 
@@ -234,6 +236,45 @@ class WorkerProfile(models.Model):
         null=True, blank=True
     )
     
+    # ===== إضافات جديدة لنظام المواقع =====
+    location_sharing_enabled = models.BooleanField(
+        default=False,
+        help_text="تفعيل مشاركة الموقع الحالي - يتحكم فيه العامل"
+    )
+    current_latitude = models.DecimalField(
+        max_digits=9, decimal_places=6, 
+        null=True, blank=True,
+        help_text="الموقع الحالي للعامل - خط العرض"
+    )
+    current_longitude = models.DecimalField(
+        max_digits=9, decimal_places=6, 
+        null=True, blank=True,
+        help_text="الموقع الحالي للعامل - خط الطول"
+    )
+    location_last_updated = models.DateTimeField(
+        null=True, blank=True,
+        help_text="آخر مرة تم فيها تحديث الموقع الحالي"
+    )
+    location_accuracy = models.FloatField(
+        null=True, blank=True,
+        help_text="دقة الموقع بالأمتار"
+    )
+    LOCATION_STATUS_CHOICES = [
+        ('active', 'نشط'),
+        ('stale', 'قديم'),
+        ('disabled', 'معطل'),
+    ]
+    location_status = models.CharField(
+        max_length=20,
+        choices=LOCATION_STATUS_CHOICES,
+        default='disabled',
+        help_text="حالة مشاركة الموقع"
+    )
+    location_sharing_updated_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="آخر مرة تم تغيير حالة مشاركة الموقع"
+    )
+    
     # الإحصائيات (محسوبة تلقائياً)
     total_jobs_completed = models.PositiveIntegerField(default=0)
     average_rating = models.DecimalField(
@@ -262,11 +303,80 @@ class WorkerProfile(models.Model):
         return f"Worker: {self.user.get_full_name()} - {self.service_category}"
     
     def save(self, *args, **kwargs):
-        # عند إنشاء WorkerProfile، تحديث onboarding_completed
-        if not self.pk:  # إنشاء جديد
+        if not self.pk:
             self.user.onboarding_completed = True
             self.user.save(update_fields=['onboarding_completed'])
         super().save(*args, **kwargs)
+    
+    # ====== Methods الخاصة بنظام المواقع ======
+    def update_current_location(self, latitude, longitude, accuracy=None):
+        if not self.location_sharing_enabled:
+            return False
+        self.current_latitude = latitude
+        self.current_longitude = longitude
+        self.location_last_updated = timezone.now()
+        if accuracy is not None:
+            self.location_accuracy = accuracy
+        self.location_status = 'active'
+        self.save(update_fields=[
+            'current_latitude', 'current_longitude',
+            'location_last_updated', 'location_accuracy', 'location_status'
+        ])
+        return True
+    
+    def toggle_location_sharing(self, enabled):
+        self.location_sharing_enabled = enabled
+        self.location_sharing_updated_at = timezone.now()
+        if enabled:
+            self.location_status = 'active' if self.current_latitude else 'disabled'
+        else:
+            self.location_status = 'disabled'
+        self.save(update_fields=[
+            'location_sharing_enabled', 'location_sharing_updated_at', 'location_status'
+        ])
+        return self.location_sharing_enabled
+    
+    def is_location_fresh(self, minutes=30):
+        if not self.location_last_updated:
+            return False
+        time_diff = timezone.now() - self.location_last_updated
+        return time_diff.total_seconds() < (minutes * 60)
+    
+    def update_location_status(self):
+        if not self.location_sharing_enabled:
+            self.location_status = 'disabled'
+        elif self.is_location_fresh(30):
+            self.location_status = 'active'
+        else:
+            self.location_status = 'stale'
+        self.save(update_fields=['location_status'])
+    
+    def calculate_distance_to(self, target_latitude, target_longitude):
+        if not self.current_latitude or not self.current_longitude:
+            return None
+        return self._haversine_distance(
+            float(self.current_latitude), float(self.current_longitude),
+            float(target_latitude), float(target_longitude)
+        )
+    
+    @staticmethod
+    def _haversine_distance(lat1, lng1, lat2, lng2):
+        lat1, lng1, lat2, lng2 = map(radians, [lat1, lng1, lat2, lng2])
+        dlat = lat2 - lat1
+        dlng = lng2 - lng1
+        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlng/2)**2
+        c = 2 * asin(sqrt(a))
+        r = 6371
+        return c * r
+    
+    @property
+    def is_currently_available_with_location(self):
+        return (
+            self.is_available and 
+            self.location_sharing_enabled and 
+            self.location_status == 'active' and
+            self.is_location_fresh()
+        )
 
 
 class ClientProfile(models.Model):
@@ -336,7 +446,6 @@ class ClientProfile(models.Model):
     
     @property
     def success_rate(self):
-        """معدل نجاح إكمال المهام"""
         if self.total_tasks_published == 0:
             return 0.0
         return round(

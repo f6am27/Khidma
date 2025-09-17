@@ -1,5 +1,6 @@
-# workers/serializers.py - النسخة النهائية الكاملة
+# workers/serializers.py - النسخة المحدثة مع حقول الموقع
 from rest_framework import serializers
+from decimal import Decimal, InvalidOperation
 from .models import WorkerService, WorkerGallery, WorkerSettings
 from users.models import User
 from services.serializers import ServiceCategorySerializer
@@ -66,23 +67,163 @@ class WorkerSettingsSerializer(serializers.ModelSerializer):
         """Initialize with partial update support"""
         super().__init__(*args, **kwargs)
         self.partial = True
-        
-        # Make all fields optional
         for field_name, field in self.fields.items():
             field.required = False
 
 
+# ============================
+# إضافات الموقع الجديدة
+# ============================
+
+# Serializer جديد لإدارة الموقع
+class WorkerLocationSerializer(serializers.Serializer):
+    """
+    Serializer لتفعيل/إيقاف وتحديث موقع العامل
+    """
+    location_sharing_enabled = serializers.BooleanField(read_only=True)
+    current_latitude = serializers.DecimalField(
+        max_digits=9, decimal_places=6, required=False, allow_null=True
+    )
+    current_longitude = serializers.DecimalField(
+        max_digits=9, decimal_places=6, required=False, allow_null=True
+    )
+    location_accuracy = serializers.FloatField(required=False, allow_null=True)
+    location_last_updated = serializers.DateTimeField(read_only=True)
+    location_status = serializers.CharField(read_only=True)
+    
+    def validate(self, data):
+        latitude = data.get('current_latitude')
+        longitude = data.get('current_longitude')
+        
+        if (latitude is not None and longitude is None) or (longitude is not None and latitude is None):
+            raise serializers.ValidationError(
+                "يجب تقديم خط العرض والطول معًا"
+            )
+        
+        if latitude is not None and not (-90 <= float(latitude) <= 90):
+            raise serializers.ValidationError("خط العرض يجب أن يكون بين -90 و 90")
+        if longitude is not None and not (-180 <= float(longitude) <= 180):
+            raise serializers.ValidationError("خط الطول يجب أن يكون بين -180 و 180")
+        
+        return data
+
+
+class LocationToggleSerializer(serializers.Serializer):
+    """
+    Serializer لتفعيل/إيقاف مشاركة الموقع
+    """
+    enabled = serializers.BooleanField(required=True)
+    
+    def validate_enabled(self, value):
+        if not isinstance(value, bool):
+            raise serializers.ValidationError("القيمة يجب أن تكون true أو false")
+        return value
+
+
+# ============================
+# تحديث WorkerProfileListSerializer
+# ============================
+
+class WorkerProfileListSerializer(serializers.ModelSerializer):
+    """
+    Flutter-compatible serializer for worker list/search
+    مع معلومات الموقع
+    """
+    name = serializers.SerializerMethodField()
+    service = serializers.SerializerMethodField() 
+    category = serializers.SerializerMethodField()
+    rating = serializers.SerializerMethodField()
+    minPrice = serializers.SerializerMethodField()
+    area = serializers.SerializerMethodField()
+    phone = serializers.CharField(read_only=True)
+    distance = serializers.SerializerMethodField()
+    time = serializers.SerializerMethodField()
+    price = serializers.SerializerMethodField()
+    image = serializers.SerializerMethodField()
+    isFavorite = serializers.SerializerMethodField()
+    
+    user = UserBasicSerializer(read_only=True)
+    services = serializers.SerializerMethodField()
+    
+    # حقول الموقع الجديدة
+    location_sharing_enabled = serializers.SerializerMethodField()
+    current_location_available = serializers.SerializerMethodField()
+    distance_from_client = serializers.SerializerMethodField()
+    location_last_updated = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = User
+        fields = [
+            'name', 'service', 'category', 'rating', 'distance', 'time', 
+            'price', 'minPrice', 'image', 'isFavorite', 'area', 'phone',
+            'id', 'user', 'services',
+            'location_sharing_enabled',
+            'current_location_available', 
+            'distance_from_client',
+            'location_last_updated'
+        ]
+    
+    def get_location_sharing_enabled(self, obj):
+        if hasattr(obj, 'worker_profile'):
+            return obj.worker_profile.location_sharing_enabled
+        return False
+    
+    def get_current_location_available(self, obj):
+        if hasattr(obj, 'worker_profile'):
+            profile = obj.worker_profile
+            return (
+                profile.location_sharing_enabled and 
+                profile.location_status == 'active' and
+                profile.is_location_fresh()
+            )
+        return False
+    
+    def get_distance_from_client(self, obj):
+        request = self.context.get('request')
+        if not request or not hasattr(obj, 'worker_profile'):
+            return None
+        client_lat = request.query_params.get('lat')
+        client_lng = request.query_params.get('lng')
+        if not (client_lat and client_lng):
+            return None
+        try:
+            client_lat = float(client_lat)
+            client_lng = float(client_lng)
+            profile = obj.worker_profile
+            if (profile.current_latitude and profile.current_longitude and 
+                profile.location_sharing_enabled and profile.location_status == 'active'):
+                distance_km = profile.calculate_distance_to(client_lat, client_lng)
+                return round(distance_km, 1) if distance_km else None
+        except (ValueError, TypeError):
+            pass
+        return None
+    
+    def get_location_last_updated(self, obj):
+        if hasattr(obj, 'worker_profile') and obj.worker_profile.location_last_updated:
+            return obj.worker_profile.location_last_updated
+        return None
+    
+    def get_distance(self, obj):
+        real_distance = self.get_distance_from_client(obj)
+        if real_distance is not None:
+            return f"{real_distance} km"
+        import random
+        return f"{random.uniform(0.5, 5.0):.1f} km"
+
+
+# ============================
+# تحديث WorkerProfileSerializer
+# ============================
+
 class WorkerProfileSerializer(serializers.ModelSerializer):
     """
     Worker profile serializer for worker to view/edit their own profile
-    محول ملف العامل للعامل لعرض/تعديل ملفه الشخصي
+    مع معلومات الموقع
     """
-    # User information
     phone = serializers.CharField(read_only=True)
     first_name = serializers.CharField(required=False)
     last_name = serializers.CharField(required=False)
     
-    # Worker profile data
     bio = serializers.SerializerMethodField()
     service_area = serializers.SerializerMethodField()
     service_category = serializers.SerializerMethodField()
@@ -100,9 +241,16 @@ class WorkerProfileSerializer(serializers.ModelSerializer):
     is_available = serializers.SerializerMethodField()
     is_online = serializers.SerializerMethodField()
     
-    # Computed fields
     full_name = serializers.SerializerMethodField()
     member_since = serializers.SerializerMethodField()
+    
+    # حقول الموقع الجديدة
+    location_sharing_enabled = serializers.SerializerMethodField()
+    current_latitude = serializers.SerializerMethodField()
+    current_longitude = serializers.SerializerMethodField()
+    location_last_updated = serializers.SerializerMethodField()
+    location_status = serializers.SerializerMethodField()
+    location_accuracy = serializers.SerializerMethodField()
     
     class Meta:
         model = User
@@ -112,232 +260,42 @@ class WorkerProfileSerializer(serializers.ModelSerializer):
             'profile_image_url', 'available_days', 'work_start_time', 'work_end_time',
             'latitude', 'longitude', 'total_jobs_completed', 'average_rating',
             'total_reviews', 'is_verified', 'is_available', 'is_online',
-            'member_since', 'created_at', 'updated_at'
+            'member_since', 'created_at', 'updated_at',
+            'location_sharing_enabled',
+            'current_latitude',
+            'current_longitude', 
+            'location_last_updated',
+            'location_status',
+            'location_accuracy'
         ]
-        read_only_fields = [
-            'id', 'phone', 'total_jobs_completed', 'average_rating',
-            'total_reviews', 'is_verified', 'member_since', 'created_at', 'updated_at'
-        ]
     
-    def __init__(self, *args, **kwargs):
-        """Initialize with partial=True for updates"""
-        super().__init__(*args, **kwargs)
-        self.partial = True
-        
-        # Make updateable fields optional
-        for field_name in ['first_name', 'last_name']:
-            if field_name in self.fields:
-                self.fields[field_name].required = False
+    def get_location_sharing_enabled(self, obj):
+        return obj.worker_profile.location_sharing_enabled if hasattr(obj, 'worker_profile') else False
     
-    def get_full_name(self, obj):
-        return obj.get_full_name() or obj.phone
-    
-    def get_member_since(self, obj):
-        return obj.date_joined.strftime("%B %Y")
-    
-    def get_profile_image_url(self, obj):
-        if hasattr(obj, 'worker_profile') and obj.worker_profile.profile_image:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.worker_profile.profile_image.url)
-            return obj.worker_profile.profile_image.url
+    def get_current_latitude(self, obj):
+        if hasattr(obj, 'worker_profile'):
+            return obj.worker_profile.current_latitude
         return None
     
-    # WorkerProfile field getters
-    def get_bio(self, obj):
-        return obj.worker_profile.bio if hasattr(obj, 'worker_profile') else ""
-    
-    def get_service_area(self, obj):
-        return obj.worker_profile.service_area if hasattr(obj, 'worker_profile') else ""
-    
-    def get_service_category(self, obj):
-        return obj.worker_profile.service_category if hasattr(obj, 'worker_profile') else ""
-    
-    def get_base_price(self, obj):
-        return str(obj.worker_profile.base_price) if hasattr(obj, 'worker_profile') else "0.00"
-    
-    def get_available_days(self, obj):
-        return obj.worker_profile.available_days if hasattr(obj, 'worker_profile') else []
-    
-    def get_work_start_time(self, obj):
-        return obj.worker_profile.work_start_time if hasattr(obj, 'worker_profile') else None
-    
-    def get_work_end_time(self, obj):
-        return obj.worker_profile.work_end_time if hasattr(obj, 'worker_profile') else None
-    
-    def get_latitude(self, obj):
-        return obj.worker_profile.latitude if hasattr(obj, 'worker_profile') else None
-    
-    def get_longitude(self, obj):
-        return obj.worker_profile.longitude if hasattr(obj, 'worker_profile') else None
-    
-    def get_total_jobs_completed(self, obj):
-        return obj.worker_profile.total_jobs_completed if hasattr(obj, 'worker_profile') else 0
-    
-    def get_average_rating(self, obj):
-        return float(obj.worker_profile.average_rating) if hasattr(obj, 'worker_profile') else 0.0
-    
-    def get_total_reviews(self, obj):
-        return obj.worker_profile.total_reviews if hasattr(obj, 'worker_profile') else 0
-    
-    def get_is_verified(self, obj):
-        return obj.worker_profile.is_verified if hasattr(obj, 'worker_profile') else False
-    
-    def get_is_available(self, obj):
-        return obj.worker_profile.is_available if hasattr(obj, 'worker_profile') else False
-    
-    def get_is_online(self, obj):
-        return obj.worker_profile.is_online if hasattr(obj, 'worker_profile') else False
-    
-    def update(self, instance, validated_data):
-        """Update user and worker profile (partial support)"""
-        # Update user fields
-        user_fields = ['first_name', 'last_name']
-        for field in user_fields:
-            if field in validated_data and validated_data[field] is not None:
-                setattr(instance, field, validated_data[field])
-        
-        instance.save()
-        return instance
-
-
-class WorkerProfileListSerializer(serializers.ModelSerializer):
-    """
-    Flutter-compatible serializer for worker list/search
-    محول متوافق مع Flutter لقائمة العمال/البحث
-    """
-    # Flutter expects these exact field names
-    name = serializers.SerializerMethodField()
-    service = serializers.SerializerMethodField() 
-    category = serializers.SerializerMethodField()
-    rating = serializers.SerializerMethodField()
-    minPrice = serializers.SerializerMethodField()
-    area = serializers.SerializerMethodField()
-    phone = serializers.CharField(read_only=True)
-    distance = serializers.SerializerMethodField()
-    time = serializers.SerializerMethodField()
-    price = serializers.SerializerMethodField()
-    image = serializers.SerializerMethodField()
-    isFavorite = serializers.SerializerMethodField()
-    
-    # Additional fields for detail view
-    user = UserBasicSerializer(read_only=True)
-    services = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = User
-        fields = [
-            # Flutter-expected fields
-            'name', 'service', 'category', 'rating', 'distance', 'time', 
-            'price', 'minPrice', 'image', 'isFavorite', 'area', 'phone',
-            # Additional backend fields
-            'id', 'user', 'services'
-        ]
-    
-    def get_name(self, obj):
-        return obj.get_full_name() or obj.phone
-    
-    def get_service(self, obj):
+    def get_current_longitude(self, obj):
         if hasattr(obj, 'worker_profile'):
-            return obj.worker_profile.service_category
-        return "Service"
-    
-    def get_category(self, obj):
-        if hasattr(obj, 'worker_profile'):
-            return obj.worker_profile.service_category
-        return "Général"
-    
-    def get_rating(self, obj):
-        if hasattr(obj, 'worker_profile'):
-            return float(obj.worker_profile.average_rating)
-        return 0.0
-    
-    def get_area(self, obj):
-        if hasattr(obj, 'worker_profile'):
-            return obj.worker_profile.service_area
-        return ""
-    
-    def get_minPrice(self, obj):
-        if hasattr(obj, 'worker_services'):
-            services = obj.worker_services.filter(is_active=True)
-            if services.exists():
-                return min(int(s.base_price) for s in services)
-        elif hasattr(obj, 'worker_profile'):
-            return int(obj.worker_profile.base_price)
-        return 0
-    
-    def get_price(self, obj):
-        if hasattr(obj, 'worker_services'):
-            services = obj.worker_services.filter(is_active=True)
-            if services.exists():
-                prices = [int(s.base_price) for s in services]
-                min_price = min(prices)
-                max_price = max(prices)
-                
-                if min_price == max_price:
-                    return f"{min_price} MRU"
-                return f"{min_price}-{max_price} MRU"
-        elif hasattr(obj, 'worker_profile'):
-            return f"{int(obj.worker_profile.base_price)} MRU"
-        
-        return "Prix sur demande"
-    
-    def get_image(self, obj):
-        if hasattr(obj, 'worker_profile') and obj.worker_profile.profile_image:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.worker_profile.profile_image.url)
-            return obj.worker_profile.profile_image.url
+            return obj.worker_profile.current_longitude  
         return None
     
-    def get_services(self, obj):
-        if hasattr(obj, 'worker_services'):
-            return WorkerServiceSerializer(obj.worker_services.filter(is_active=True), many=True).data
-        return []
+    def get_location_last_updated(self, obj):
+        if hasattr(obj, 'worker_profile'):
+            return obj.worker_profile.location_last_updated
+        return None
     
-    def get_distance(self, obj):
-        request = self.context.get('request')
-        if request:
-            client_lat = request.query_params.get('lat')
-            client_lng = request.query_params.get('lng')
-            
-            if (client_lat and client_lng and hasattr(obj, 'worker_profile') 
-                and obj.worker_profile.latitude and obj.worker_profile.longitude):
-                try:
-                    from math import radians, cos, sin, asin, sqrt
-                    
-                    def haversine_distance(lat1, lng1, lat2, lng2):
-                        lat1, lng1, lat2, lng2 = map(radians, [lat1, lng1, lat2, lng2])
-                        dlat = lat2 - lat1
-                        dlng = lng2 - lng1
-                        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlng/2)**2
-                        c = 2 * asin(sqrt(a))
-                        r = 6371
-                        return c * r
-                    
-                    distance_km = haversine_distance(
-                        float(client_lat), float(client_lng),
-                        float(obj.worker_profile.latitude), float(obj.worker_profile.longitude)
-                    )
-                    return f"{distance_km:.1f} km"
-                    
-                except (ValueError, TypeError):
-                    pass
-        
-        import random
-        return f"{random.uniform(0.5, 5.0):.1f} km"
+    def get_location_status(self, obj):
+        if hasattr(obj, 'worker_profile'):
+            return obj.worker_profile.location_status
+        return 'disabled'
     
-    def get_time(self, obj):
-        import random
-        time_minutes = random.randint(5, 30)
-        return f"{time_minutes} Min"
-    
-    def get_isFavorite(self, obj):
-        request = self.context.get('request')
-        if request and request.user.is_authenticated and request.user.role == 'client':
-            from clients.models import FavoriteWorker
-            return FavoriteWorker.objects.filter(client=request.user, worker=obj).exists()
-        return False
+    def get_location_accuracy(self, obj):
+        if hasattr(obj, 'worker_profile'):
+            return obj.worker_profile.location_accuracy
+        return None
 
 
 class WorkerProfileDetailSerializer(serializers.ModelSerializer):

@@ -1,5 +1,5 @@
 # tasks/views.py
-from rest_framework import generics, status, permissions
+from rest_framework import generics, status, permissions, serializers
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import ValidationError, PermissionDenied, NotFound
@@ -8,6 +8,7 @@ from django.db.models import Q, Count, Avg
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 import random
+from math import radians, cos, sin, asin, sqrt
 
 from .models import ServiceRequest, TaskApplication, TaskReview, TaskNotification
 from .serializers import (
@@ -18,11 +19,11 @@ from .serializers import (
     TaskApplicationSerializer,
     TaskApplicationCreateSerializer,
     TaskReviewSerializer,
-    TaskNotificationSerializer
+    TaskNotificationSerializer,
+    TaskMapDataSerializer
 )
 from users.models import User
 from services.models import ServiceCategory
-
 
 class ServiceRequestCreateView(generics.CreateAPIView):
     """
@@ -34,16 +35,10 @@ class ServiceRequestCreateView(generics.CreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     
     def perform_create(self, serializer):
-        # Ensure user is a client
         if self.request.user.role != 'client':
             raise PermissionDenied("Only clients can create service requests")
-        
-        # Create the service request
         service_request = serializer.save()
-        
-        # Send notification to relevant workers (async in production)
         self._notify_workers(service_request)
-        
         return service_request
     
     def _notify_workers(self, service_request):
@@ -54,7 +49,6 @@ class ServiceRequestCreateView(generics.CreateAPIView):
             onboarding_completed=True,
             worker_profile__service_area__icontains=service_request.location.split(',')[0]
         ).distinct()
-        
         for worker in relevant_workers[:10]:
             TaskNotification.objects.create(
                 recipient=worker,
@@ -74,7 +68,6 @@ class ClientTasksListView(generics.ListAPIView):
     def get_queryset(self):
         if self.request.user.role != 'client':
             return ServiceRequest.objects.none()
-        
         return ServiceRequest.objects.filter(
             client=self.request.user
         ).select_related('service_category', 'assigned_worker')
@@ -86,7 +79,6 @@ class ServiceRequestDetailView(generics.RetrieveAPIView):
     
     def get_queryset(self):
         user = self.request.user
-        
         if user.role == 'client':
             return ServiceRequest.objects.filter(client=user)
         elif user.role == 'worker':
@@ -94,7 +86,6 @@ class ServiceRequestDetailView(generics.RetrieveAPIView):
                 Q(status='published') |
                 Q(assigned_worker=user)
             )
-        
         return ServiceRequest.objects.none()
 
 
@@ -114,7 +105,6 @@ class ServiceRequestUpdateView(generics.UpdateAPIView):
     
     def perform_update(self, serializer):
         task = serializer.save()
-        
         if task.applications.filter(is_active=True).exists():
             for application in task.applications.filter(is_active=True):
                 TaskNotification.objects.create(
@@ -127,46 +117,118 @@ class ServiceRequestUpdateView(generics.UpdateAPIView):
 
 
 class AvailableTasksListView(generics.ListAPIView):
-   serializer_class = AvailableTaskSerializer
-   permission_classes = [permissions.IsAuthenticated]
-   filter_backends = [DjangoFilterBackend]
-   
-   def get_queryset(self):
-       if self.request.user.role != 'worker':
-           return ServiceRequest.objects.none()
-       
-       # أظهر جميع المهام المنشورة (بدلاً من التقييد بخدمات العامل)
-       queryset = ServiceRequest.objects.filter(
-           status='published'
-       ).select_related('client', 'service_category')
-       
-       category = self.request.query_params.get('category')
-       if category:
-           queryset = queryset.filter(service_category__name__icontains=category)
-       
-       location = self.request.query_params.get('location')
-       if location:
-           queryset = queryset.filter(location__icontains=location)
-       
-       budget_min = self.request.query_params.get('budget_min')
-       if budget_min:
-           queryset = queryset.filter(budget__gte=budget_min)
-       
-       budget_max = self.request.query_params.get('budget_max')
-       if budget_max:
-           queryset = queryset.filter(budget__lte=budget_max)
-       
-       sort_by = self.request.query_params.get('sort_by', 'latest')
-       if sort_by == 'budget_high':
-           queryset = queryset.order_by('-budget')
-       elif sort_by == 'budget_low':
-           queryset = queryset.order_by('budget')
-       elif sort_by == 'urgent':
-           queryset = queryset.order_by('-is_urgent', '-created_at')
-       else:
-           queryset = queryset.order_by('-created_at')
-       
-       return queryset
+    """
+    تحديث: قائمة المهام المتاحة مع دعم البحث الجغرافي
+    """
+    serializer_class = AvailableTaskSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend]
+    
+    def get_queryset(self):
+        if self.request.user.role != 'worker':
+            return ServiceRequest.objects.none()
+        
+        queryset = ServiceRequest.objects.filter(
+            status='published'
+        ).select_related('client', 'service_category')
+        
+        category = self.request.query_params.get('category')
+        if category:
+            queryset = queryset.filter(service_category__name__icontains=category)
+        
+        location = self.request.query_params.get('location')
+        if location:
+            queryset = queryset.filter(location__icontains=location)
+        
+        budget_min = self.request.query_params.get('budget_min')
+        if budget_min:
+            queryset = queryset.filter(budget__gte=budget_min)
+        
+        budget_max = self.request.query_params.get('budget_max')
+        if budget_max:
+            queryset = queryset.filter(budget__lte=budget_max)
+        
+        return queryset
+    
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        
+        worker_lat = request.query_params.get('lat')
+        worker_lng = request.query_params.get('lng')
+        distance_max = request.query_params.get('distance_max', '30')
+        sort_by = request.query_params.get('sort_by', 'latest')
+        
+        try:
+            distance_max = float(distance_max)
+        except (ValueError, TypeError):
+            distance_max = 30.0
+        
+        if worker_lat and worker_lng:
+            try:
+                worker_lat = float(worker_lat)
+                worker_lng = float(worker_lng)
+                
+                tasks_with_distance = []
+                for task in queryset:
+                    if task.latitude and task.longitude:
+                        distance = self._calculate_distance(
+                            worker_lat, worker_lng,
+                            float(task.latitude), float(task.longitude)
+                        )
+                        if distance <= distance_max:
+                            task.calculated_distance = distance
+                            tasks_with_distance.append(task)
+                
+                if sort_by == 'nearest':
+                    tasks_with_distance.sort(key=lambda x: x.calculated_distance)
+                    queryset = tasks_with_distance
+                else:
+                    queryset = tasks_with_distance
+                    
+            except (ValueError, TypeError):
+                pass
+        
+        if sort_by == 'budget_high' and not (worker_lat and worker_lng and sort_by == 'nearest'):
+            queryset = queryset.order_by('-budget')
+        elif sort_by == 'budget_low':
+            queryset = queryset.order_by('budget')
+        elif sort_by == 'urgent':
+            queryset = queryset.order_by('-is_urgent', '-created_at')
+        elif sort_by == 'latest' and not (worker_lat and worker_lng and sort_by == 'nearest'):
+            queryset = queryset.order_by('-created_at')
+        
+        if isinstance(queryset, list):
+            from django.core.paginator import Paginator
+            paginator = Paginator(queryset, 20)
+            page_number = request.query_params.get('page', 1)
+            page_obj = paginator.get_page(page_number)
+            serializer = self.get_serializer(page_obj.object_list, many=True)
+            return Response({
+                'count': len(queryset),
+                'next': None,
+                'previous': None,
+                'results': serializer.data,
+                'location_filter_applied': bool(worker_lat and worker_lng),
+                'distance_max_km': distance_max if worker_lat and worker_lng else None
+            })
+        else:
+            page = self.paginate_queryset(queryset)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                return self.get_paginated_response(serializer.data)
+            serializer = self.get_serializer(queryset, many=True)
+            return Response({'count': len(serializer.data), 'results': serializer.data})
+    
+    def _calculate_distance(self, lat1, lng1, lat2, lng2):
+        lat1, lng1, lat2, lng2 = map(radians, [lat1, lng1, lat2, lng2])
+        dlat = lat2 - lat1
+        dlng = lng2 - lng1
+        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlng/2)**2
+        c = 2 * asin(sqrt(a))
+        r = 6371
+        return c * r
+
+
 class TaskApplicationCreateView(generics.CreateAPIView):
     serializer_class = TaskApplicationCreateSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -182,7 +244,6 @@ class TaskApplicationCreateView(generics.CreateAPIView):
             status='published'
         )
         
-        # Use request.user directly instead of worker_profile
         if TaskApplication.objects.filter(
             service_request=service_request,
             worker=request.user,
@@ -262,7 +323,6 @@ def accept_worker(request, pk):
     application.responded_at = timezone.now()
     application.save()
     
-    # assigned_worker is now the User object directly
     service_request.assigned_worker = application.worker
     service_request.status = 'active'
     service_request.accepted_at = timezone.now()
@@ -319,17 +379,13 @@ def update_task_status(request, pk):
     if new_status == 'work_completed':
         if request.user.role != 'worker':
             raise PermissionDenied("Only workers can mark work as completed")
-        
         if service_request.assigned_worker != request.user:
             raise PermissionDenied("Only the assigned worker can mark this work as completed")
-        
         if service_request.status != 'active':
             raise ValidationError("Task must be active to mark as work completed")
-        
         service_request.status = 'work_completed'
         service_request.work_completed_at = timezone.now()
         service_request.save()
-        
         TaskNotification.objects.create(
             recipient=service_request.client,
             service_request=service_request,
@@ -337,24 +393,19 @@ def update_task_status(request, pk):
             title='Travail terminé',
             message=f'Le prestataire a terminé le travail pour "{service_request.title}". Veuillez vérifier et confirmer.'
         )
-        
         return Response({'message': 'Work marked as completed. Waiting for client confirmation.'})
     
     elif new_status == 'completed':
         if service_request.client != request.user:
             raise PermissionDenied("Only the client can confirm task completion")
-        
         if service_request.status != 'work_completed':
             raise ValidationError("Work must be marked as completed by worker first")
-        
         service_request.status = 'completed'
         service_request.completed_at = timezone.now()
         service_request.save()
-        
         worker = service_request.assigned_worker
         worker.total_jobs_completed += 1
         worker.save()
-        
         TaskNotification.objects.create(
             recipient=worker,
             service_request=service_request,
@@ -362,20 +413,16 @@ def update_task_status(request, pk):
             title='Tâche confirmée terminée',
             message=f'Le client a confirmé la completion de "{service_request.title}". Félicitations!'
         )
-        
         return Response({'message': 'Task completed successfully. Payment will be processed.'})
     
     elif new_status == 'cancelled':
         if service_request.client != request.user:
             raise PermissionDenied("You can only cancel your own tasks")
-        
         if service_request.status not in ['published', 'active']:
             raise ValidationError("Only published or active tasks can be cancelled")
-        
         service_request.status = 'cancelled'
         service_request.cancelled_at = timezone.now()
         service_request.save()
-        
         if service_request.assigned_worker:
             TaskNotification.objects.create(
                 recipient=service_request.assigned_worker,
@@ -384,7 +431,6 @@ def update_task_status(request, pk):
                 title='Tâche annulée',
                 message=f'La tâche "{service_request.title}" a été annulée par le client.'
             )
-        
         return Response({'message': 'Task cancelled successfully'})
     
     else:
@@ -428,52 +474,23 @@ class TaskReviewCreateView(generics.CreateAPIView):
 @permission_classes([permissions.IsAuthenticated])
 def task_stats(request):
     user = request.user
-    
     if user.role == 'client':
         stats = {
-            'published': ServiceRequest.objects.filter(
-                client=user,
-                status='published'
-            ).count(),
-            'active': ServiceRequest.objects.filter(
-                client=user,
-                status='active'
-            ).count(),
-            'completed': ServiceRequest.objects.filter(
-                client=user,
-                status='completed'
-            ).count(),
-            'cancelled': ServiceRequest.objects.filter(
-                client=user,
-                status='cancelled'
-            ).count(),
+            'published': ServiceRequest.objects.filter(client=user, status='published').count(),
+            'active': ServiceRequest.objects.filter(client=user, status='active').count(),
+            'completed': ServiceRequest.objects.filter(client=user, status='completed').count(),
+            'cancelled': ServiceRequest.objects.filter(client=user, status='cancelled').count(),
             'total_spent': 0,
         }
-        
     elif user.role == 'worker':
         stats = {
-            'applications_sent': TaskApplication.objects.filter(
-                worker=user
-            ).count(),
-            'applications_pending': TaskApplication.objects.filter(
-                worker=user,
-                application_status='pending'
-            ).count(),
-            'applications_accepted': TaskApplication.objects.filter(
-                worker=user,
-                application_status='accepted'
-            ).count(),
-            'tasks_active': ServiceRequest.objects.filter(
-                assigned_worker=user,
-                status='active'
-            ).count(),
-            'tasks_completed': ServiceRequest.objects.filter(
-                assigned_worker=user,
-                status='completed'
-            ).count(),
+            'applications_sent': TaskApplication.objects.filter(worker=user).count(),
+            'applications_pending': TaskApplication.objects.filter(worker=user, application_status='pending').count(),
+            'applications_accepted': TaskApplication.objects.filter(worker=user, application_status='accepted').count(),
+            'tasks_active': ServiceRequest.objects.filter(assigned_worker=user, status='active').count(),
+            'tasks_completed': ServiceRequest.objects.filter(assigned_worker=user, status='completed').count(),
             'total_earned': 0,
         }
-    
     else:
         stats = {
             'total_tasks': ServiceRequest.objects.count(),
@@ -483,9 +500,156 @@ def task_stats(request):
             'cancelled_tasks': ServiceRequest.objects.filter(status='cancelled').count(),
             'total_applications': TaskApplication.objects.count(),
             'total_reviews': TaskReview.objects.count(),
-            'average_rating': TaskReview.objects.aggregate(
-                avg_rating=Avg('rating')
-            )['avg_rating'] or 0,
+            'average_rating': TaskReview.objects.aggregate(avg_rating=Avg('rating'))['avg_rating'] or 0,
         }
-    
     return Response(stats)
+
+
+# تحديث AvailableTaskSerializer لإظهار المسافة المحسوبة
+class AvailableTaskSerializer(serializers.ModelSerializer):
+    """
+    تحديث: إضافة المسافة المحسوبة من موقع العامل
+    """
+    distance_from_worker = serializers.SerializerMethodField()
+    exact_distance_km = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = ServiceRequest
+        fields = [
+            'id', 'title', 'description', 'serviceType', 'category',
+            'budget', 'location', 'preferred_time', 'is_urgent',
+            'requires_materials', 'createdAt', 'applicantsCount',
+            'client_name', 'client_rating', 'distance',
+            'has_applied', 'application_status',
+            'distance_from_worker', 'exact_distance_km'
+        ]
+    
+    def get_distance_from_worker(self, obj):
+        if hasattr(obj, 'calculated_distance'):
+            return f"{obj.calculated_distance:.1f} km"
+        return self.get_distance(obj)
+    
+    def get_exact_distance_km(self, obj):
+        if hasattr(obj, 'calculated_distance'):
+            return round(obj.calculated_distance, 1)
+        return None
+    
+    def get_distance(self, obj):
+        if hasattr(obj, 'calculated_distance'):
+            return f"{obj.calculated_distance:.1f} km"
+        return f"{random.uniform(0.5, 10.0):.1f} km"
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def tasks_map_data(request):
+    """
+    API مخصص لعرض المهام على الخريطة التفاعلية للعامل
+    يعيد بيانات مبسطة ومحسنة للخرائط مع موقع العامل
+    """
+    if request.user.role != 'worker':
+        raise PermissionDenied("هذه الخدمة متاحة للعمال فقط")
+    
+    if not hasattr(request.user, 'worker_profile'):
+        return Response({
+            'error': 'ملف العامل غير مكتمل',
+            'worker_location': None,
+            'tasks': []
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    worker_profile = request.user.worker_profile
+    
+    # التحقق من تفعيل مشاركة الموقع
+    if not worker_profile.location_sharing_enabled or not worker_profile.current_latitude:
+        return Response({
+            'error': 'مشاركة الموقع غير مفعلة',
+            'message': 'يجب تفعيل مشاركة الموقع لعرض الخريطة',
+            'worker_location': None,
+            'tasks': []
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # معاملات الفلترة
+    distance_max = float(request.query_params.get('distance_max', 30))
+    category = request.query_params.get('category')
+    min_budget = request.query_params.get('min_budget')
+    max_budget = request.query_params.get('max_budget')
+    urgent_only = request.query_params.get('urgent_only', 'false').lower() == 'true'
+    
+    # الحصول على المهام التي لها إحداثيات دقيقة فقط
+    queryset = ServiceRequest.objects.filter(
+        status='published',
+        latitude__isnull=False,
+        longitude__isnull=False
+    ).select_related('client', 'service_category')
+    
+    # تطبيق الفلاتر
+    if category:
+        queryset = queryset.filter(service_category__name__icontains=category)
+    
+    if min_budget:
+        try:
+            queryset = queryset.filter(budget__gte=float(min_budget))
+        except (ValueError, TypeError):
+            pass
+    
+    if max_budget:
+        try:
+            queryset = queryset.filter(budget__lte=float(max_budget))
+        except (ValueError, TypeError):
+            pass
+    
+    if urgent_only:
+        queryset = queryset.filter(is_urgent=True)
+    
+    # فلترة المهام القريبة وحساب المسافة
+    worker_lat = float(worker_profile.current_latitude)
+    worker_lng = float(worker_profile.current_longitude)
+    
+    nearby_tasks = []
+    for task in queryset:
+        distance = worker_profile.calculate_distance_to(
+            float(task.latitude), float(task.longitude)
+        )
+        if distance and distance <= distance_max:
+            task.calculated_distance = distance
+            nearby_tasks.append(task)
+    
+    # ترتيب حسب القرب
+    nearby_tasks.sort(key=lambda x: x.calculated_distance)
+    
+    # تحديد العدد الأقصى للمهام المعروضة على الخريطة
+    max_tasks = int(request.query_params.get('max_tasks', 50))
+    nearby_tasks = nearby_tasks[:max_tasks]
+    
+    # تحويل البيانات
+    serializer = TaskMapDataSerializer(nearby_tasks, many=True, context={'request': request})
+    
+    # إحصائيات إضافية للخريطة
+    stats = {
+        'total_found': len(nearby_tasks),
+        'urgent_count': sum(1 for task in nearby_tasks if task.is_urgent),
+        'avg_distance': round(sum(task.calculated_distance for task in nearby_tasks) / len(nearby_tasks), 1) if nearby_tasks else 0,
+        'budget_range': {
+            'min': min(float(task.budget) for task in nearby_tasks) if nearby_tasks else 0,
+            'max': max(float(task.budget) for task in nearby_tasks) if nearby_tasks else 0
+        }
+    }
+    
+    return Response({
+        'success': True,
+        'worker_location': {
+            'latitude': worker_lat,
+            'longitude': worker_lng,
+            'last_updated': worker_profile.location_last_updated,
+            'location_status': worker_profile.location_status,
+            'is_fresh': worker_profile.is_location_fresh()
+        },
+        'filters_applied': {
+            'distance_max_km': distance_max,
+            'category': category,
+            'urgent_only': urgent_only,
+            'budget_range': f"{min_budget or 'أي'} - {max_budget or 'أي'}"
+        },
+        'statistics': stats,
+        'tasks': serializer.data
+    }, status=status.HTTP_200_OK)
