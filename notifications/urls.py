@@ -1,10 +1,13 @@
 # notifications/urls.py
 from django.urls import path
 from . import views
+from . import device_views  # إضافة جديدة
 
 app_name = 'notifications'
 
 urlpatterns = [
+    # ===== APIs الإشعارات الأساسية (موجودة مسبقاً) =====
+    
     # قائمة الإشعارات
     path('', views.NotificationListView.as_view(), name='list'),
     
@@ -28,4 +31,15 @@ urlpatterns = [
     
     # تفاصيل إشعار محدد (الأخير)
     path('<int:pk>/', views.NotificationDetailView.as_view(), name='detail'),
+    
+    # ===== Firebase Push Notifications APIs (جديدة) =====
+    
+    # تسجيل وإدارة الأجهزة
+    path('register-device/', device_views.register_device_token, name='register_device'),
+    path('devices/', device_views.list_user_devices, name='list_devices'),
+    path('device/<int:device_id>/', device_views.unregister_device_token, name='unregister_device'),
+    path('device/<int:device_id>/settings/', device_views.update_device_settings, name='update_device_settings'),
+    
+    # اختبار الإشعارات
+    path('test/', device_views.test_notification, name='test_notification'),
 ]

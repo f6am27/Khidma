@@ -12,7 +12,6 @@ load_dotenv(BASE_DIR / ".env")
 SECRET_KEY = os.getenv("SECRET_KEY", "CHANGE_ME_IN_ENV")
 DEBUG = os.getenv("DEBUG", "True") == "True"
 
-
 DEFAULT_REGION = os.getenv('DEFAULT_REGION', 'MR')
 DEFAULT_COUNTRY_DIAL_CODE = os.getenv('DEFAULT_COUNTRY_DIAL_CODE', '+222')
 
@@ -33,12 +32,12 @@ INSTALLED_APPS = [
     'corsheaders',
 
     'users', 
-    'services',      # فئات الخدمات
-    'workers',       # ملفات العمال
-    'tasks',         # إدارة المهام  
-    'clients',       # APIs العميل
-    'chat',          # المحادثات
-    'notifications', # الإشعارات
+    'services',
+    'workers',
+    'tasks',
+    'clients',
+    'chat',
+    'notifications',
 ]
 
 # الوسطاء (ضع corsheaders مبكرًا)
@@ -134,8 +133,128 @@ CHINGUISOFT_BASE_URL = os.getenv('CHINGUISOFT_BASE_URL', '')
 CHINGUISOFT_VALIDATION_KEY = os.getenv('CHINGUISOFT_VALIDATION_KEY', '')
 CHINGUISOFT_VALIDATION_TOKEN = os.getenv('CHINGUISOFT_VALIDATION_TOKEN', '')
 
-# في core/settings.py أضيفي هذا السطر في أي مكان
-LANGUAGE_CODE = 'en-us'
-#after users create
 # Custom User Model
 AUTH_USER_MODEL = 'users.User'
+
+# ===============================================
+# إضافات لرفع الصور والملفات
+# ===============================================
+
+# إعدادات الملفات والصور
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
+# إعدادات رفع الملفات
+FILE_UPLOAD_MAX_MEMORY_SIZE = 5242880  # 5MB
+DATA_UPLOAD_MAX_MEMORY_SIZE = 5242880  # 5MB
+FILE_UPLOAD_PERMISSIONS = 0o644
+
+# إعدادات أمان الملفات
+ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/jpg']
+MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5MB
+
+# للـ Development - عرض الملفات المرفوعة
+if DEBUG:
+    os.makedirs(MEDIA_ROOT, exist_ok=True)
+
+# ===============================================
+# Firebase Configuration - إضافة جديدة
+# ===============================================
+
+# معرف المشروع و Sender ID من .env
+FIREBASE_PROJECT_ID = os.getenv('FIREBASE_PROJECT_ID', '')
+FIREBASE_SENDER_ID = os.getenv('FIREBASE_SENDER_ID', '')
+
+# مسار ملف Service Account (من .env أو افتراضي)
+FIREBASE_CREDENTIALS_PATH = BASE_DIR / os.getenv('FIREBASE_CREDENTIALS_PATH', 'serviceAccountKey.json')
+
+# إعدادات الإشعارات من .env
+FIREBASE_NOTIFICATIONS = {
+    'DEFAULT_SOUND': os.getenv('FIREBASE_DEFAULT_SOUND', 'default'),
+    'DEFAULT_PRIORITY': os.getenv('FIREBASE_DEFAULT_PRIORITY', 'high'),
+    'MAX_RETRIES': int(os.getenv('FIREBASE_MAX_RETRIES', '3')),
+    'TIMEOUT': int(os.getenv('FIREBASE_TIMEOUT', '30')),
+    'BADGE_ENABLED': True,
+}
+
+# التحقق من وجود الملفات المطلوبة (تحذير فقط في التطوير)
+if DEBUG and not FIREBASE_CREDENTIALS_PATH.exists():
+    print(f"تحذير: ملف Firebase غير موجود في: {FIREBASE_CREDENTIALS_PATH}")
+    print("الإشعارات المتقدمة ستكون معطلة حتى إضافة الملف")
+
+# في الإنتاج، تأكد من وجود المتغيرات الضرورية
+if not DEBUG:
+    if not FIREBASE_PROJECT_ID or not FIREBASE_SENDER_ID:
+        print("تحذير: متغيرات Firebase غير مكتملة في الإنتاج")
+    
+    if not FIREBASE_CREDENTIALS_PATH.exists():
+        print(f"خطأ: ملف Firebase مفقود في الإنتاج: {FIREBASE_CREDENTIALS_PATH}")
+
+# ===============================================
+# Logging Configuration - محدث
+# ===============================================
+
+# إنشاء مجلد logs إذا لم يكن موجود
+LOGS_DIR = BASE_DIR / 'logs'
+LOGS_DIR.mkdir(exist_ok=True)
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'file': {
+            'level': 'INFO',
+            'class': 'logging.FileHandler',
+            'filename': LOGS_DIR / 'django.log',
+            'formatter': 'verbose',
+        },
+        'firebase_file': {
+            'level': 'INFO',
+            'class': 'logging.FileHandler',
+            'filename': LOGS_DIR / 'firebase_notifications.log',
+            'formatter': 'verbose',
+        },
+        'console': {
+            'level': 'DEBUG' if DEBUG else 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['file', 'console'] if DEBUG else ['file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'firebase_notifications': {
+            'handlers': ['firebase_file', 'console'] if DEBUG else ['firebase_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
+
+# ===============================================
+# Celery Configuration (اختياري للمعالجة غير المتزامنة)
+# ===============================================
+
+# إعدادات Celery للمعالجة المتقدمة (اختياري)
+USE_CELERY = os.getenv('USE_CELERY', 'False').lower() == 'true'
+
+if USE_CELERY:
+    CELERY_BROKER_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+    CELERY_RESULT_BACKEND = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+    CELERY_ACCEPT_CONTENT = ['json']
+    CELERY_TASK_SERIALIZER = 'json'
+    CELERY_RESULT_SERIALIZER = 'json'
+    CELERY_TIMEZONE = TIME_ZONE
