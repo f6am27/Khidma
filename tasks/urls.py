@@ -21,7 +21,7 @@ urlpatterns = [
     
     # Worker endpoints - Available tasks
     path('available/', views.AvailableTasksListView.as_view(), name='available-tasks'),  # GET - Available tasks for workers
-    path('map-data/', views.tasks_map_data, name='tasks-map-data'),  # أضف هذا السطر
+    path('map-data/', views.tasks_map_data, name='tasks-map-data'), 
     path('<int:pk>/apply/', views.TaskApplicationCreateView.as_view(), name='apply-to-task'),  # POST - Apply for task
 
     

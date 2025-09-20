@@ -166,7 +166,7 @@ FIREBASE_PROJECT_ID = os.getenv('FIREBASE_PROJECT_ID', '')
 FIREBASE_SENDER_ID = os.getenv('FIREBASE_SENDER_ID', '')
 
 # مسار ملف Service Account (من .env أو افتراضي)
-FIREBASE_CREDENTIALS_PATH = BASE_DIR / os.getenv('FIREBASE_CREDENTIALS_PATH', 'serviceAccountKey.json')
+FIREBASE_CREDENTIALS_PATH = Path(os.getenv('FIREBASE_CREDENTIALS_PATH', r'C:\secure\firebase\serviceAccountKey.json'))
 
 # إعدادات الإشعارات من .env
 FIREBASE_NOTIFICATIONS = {
