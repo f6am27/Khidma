@@ -1,15 +1,21 @@
-# users/views.py
+# users/views.py - الملف الكامل
 from django.contrib.auth import authenticate
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import User
+from django.db import transaction
+from django.shortcuts import get_object_or_404
+from .models import User, WorkerProfile, ClientProfile
 from .utils import to_e164
 from .serializers import (
     RegisterSerializer, VerifySerializer, LoginSerializer,
     PasswordResetStartSerializer, PasswordResetConfirmSerializer,
-    ResendOTPSerializer, UserSerializer
+    ResendOTPSerializer, UserSerializer, WorkerProfileUpdateSerializer, 
+    ClientProfileUpdateSerializer, WorkerOnboardingSerializer, 
+    LocationUpdateSerializer, LocationSharingToggleSerializer, 
+    WorkerProfileSerializer, ClientProfileSerializer
 )
 from .services import (
     start_registration, verify_otp, resend_registration,
@@ -298,3 +304,314 @@ class UserProfileView(APIView):
             "code": "invalid_input", 
             "detail": serializer.errors
         }, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ====== Views الجديدة لإدارة الملفات الشخصية ======
+
+class WorkerProfileView(APIView):
+    """
+    عرض وتحديث ملف العامل
+    GET/PUT /api/users/worker-profile/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        """عرض ملف العامل"""
+        if not request.user.is_worker:
+            return Response({
+                "code": "not_worker",
+                "detail": "هذا العضو ليس عاملاً"
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            worker_profile = request.user.worker_profile
+            serializer = WorkerProfileSerializer(worker_profile)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except WorkerProfile.DoesNotExist:
+            return Response({
+                "code": "profile_not_found",
+                "detail": "ملف العامل غير موجود"
+            }, status=status.HTTP_404_NOT_FOUND)
+    
+    def put(self, request):
+        """تحديث ملف العامل"""
+        if not request.user.is_worker:
+            return Response({
+                "code": "not_worker",
+                "detail": "هذا العضو ليس عاملاً"
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            worker_profile = request.user.worker_profile
+        except WorkerProfile.DoesNotExist:
+            return Response({
+                "code": "profile_not_found",
+                "detail": "ملف العامل غير موجود"
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        serializer = WorkerProfileUpdateSerializer(
+            worker_profile, 
+            data=request.data, 
+            partial=True
+        )
+        
+        if serializer.is_valid():
+            with transaction.atomic():
+                serializer.save()
+            
+            # إرجاع البيانات المحدثة
+            response_serializer = WorkerProfileSerializer(worker_profile)
+            return Response({
+                "success": True,
+                "message": "تم تحديث الملف الشخصي بنجاح",
+                "data": response_serializer.data
+            }, status=status.HTTP_200_OK)
+        
+        return Response({
+            "code": "validation_error",
+            "detail": serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ClientProfileView(APIView):
+    """
+    عرض وتحديث ملف العميل
+    GET/PUT /api/users/client-profile/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        """عرض ملف العميل"""
+        if not request.user.is_client:
+            return Response({
+                "code": "not_client",
+                "detail": "هذا العضو ليس عميلاً"
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # إنشاء ملف العميل إذا لم يكن موجوداً
+        client_profile, created = ClientProfile.objects.get_or_create(
+            user=request.user
+        )
+        
+        serializer = ClientProfileSerializer(client_profile)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    def put(self, request):
+        """تحديث ملف العميل"""
+        if not request.user.is_client:
+            return Response({
+                "code": "not_client",
+                "detail": "هذا العضو ليس عميلاً"
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # إنشاء ملف العميل إذا لم يكن موجوداً
+        client_profile, created = ClientProfile.objects.get_or_create(
+            user=request.user
+        )
+        
+        serializer = ClientProfileUpdateSerializer(
+            client_profile, 
+            data=request.data, 
+            partial=True
+        )
+        
+        if serializer.is_valid():
+            with transaction.atomic():
+                serializer.save()
+            
+            # إرجاع البيانات المحدثة
+            response_serializer = ClientProfileSerializer(client_profile)
+            return Response({
+                "success": True,
+                "message": "تم تحديث الملف الشخصي بنجاح",
+                "data": response_serializer.data
+            }, status=status.HTTP_200_OK)
+        
+        return Response({
+            "code": "validation_error",
+            "detail": serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+
+class WorkerOnboardingView(APIView):
+    """
+    إكمال Onboarding للعامل (إنشاء WorkerProfile)
+    POST /api/users/worker-onboarding/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        if not request.user.is_worker:
+            return Response({
+                "code": "not_worker",
+                "detail": "هذا العضو ليس عاملاً"
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        if request.user.onboarding_completed:
+            return Response({
+                "code": "already_completed",
+                "detail": "تم إكمال البيانات مسبقاً"
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if hasattr(request.user, 'worker_profile'):
+            return Response({
+                "code": "profile_exists",
+                "detail": "ملف العامل موجود مسبقاً"
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        serializer = WorkerOnboardingSerializer(
+            data=request.data,
+            context={'request': request}
+        )
+        
+        if serializer.is_valid():
+            with transaction.atomic():
+                worker_profile = serializer.save()
+            
+            response_serializer = WorkerProfileSerializer(worker_profile)
+            return Response({
+                "success": True,
+                "message": "تم إكمال بيانات العامل بنجاح",
+                "data": response_serializer.data
+            }, status=status.HTTP_201_CREATED)
+        
+        return Response({
+            "code": "validation_error",
+            "detail": serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def update_worker_location(request):
+    """
+    تحديث موقع العامل الحالي
+    POST /api/users/update-location/
+    """
+    if not request.user.is_worker:
+        return Response({
+            "code": "not_worker",
+            "detail": "هذا العضو ليس عاملاً"
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        worker_profile = request.user.worker_profile
+    except WorkerProfile.DoesNotExist:
+        return Response({
+            "code": "profile_not_found",
+            "detail": "ملف العامل غير موجود"
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+    serializer = LocationUpdateSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response({
+            "code": "validation_error",
+            "detail": serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # تحديث الموقع
+    success = worker_profile.update_current_location(
+        latitude=serializer.validated_data['latitude'],
+        longitude=serializer.validated_data['longitude'],
+        accuracy=serializer.validated_data.get('accuracy')
+    )
+    
+    if not success:
+        return Response({
+            "code": "location_sharing_disabled",
+            "detail": "مشاركة الموقع معطلة"
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    return Response({
+        "success": True,
+        "message": "تم تحديث الموقع بنجاح",
+        "data": {
+            "latitude": float(worker_profile.current_latitude),
+            "longitude": float(worker_profile.current_longitude),
+            "location_status": worker_profile.location_status,
+            "last_updated": worker_profile.location_last_updated.isoformat()
+        }
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def toggle_location_sharing(request):
+    """
+    تفعيل/إلغاء مشاركة الموقع
+    POST /api/users/toggle-location-sharing/
+    """
+    if not request.user.is_worker:
+        return Response({
+            "code": "not_worker",
+            "detail": "هذا العضو ليس عاملاً"
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        worker_profile = request.user.worker_profile
+    except WorkerProfile.DoesNotExist:
+        return Response({
+            "code": "profile_not_found",
+            "detail": "ملف العامل غير موجود"
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+    serializer = LocationSharingToggleSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response({
+            "code": "validation_error",
+            "detail": serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # تغيير حالة المشاركة
+    new_status = worker_profile.toggle_location_sharing(
+        enabled=serializer.validated_data['enabled']
+    )
+    
+    return Response({
+        "success": True,
+        "message": f"تم {'تفعيل' if new_status else 'إلغاء'} مشاركة الموقع",
+        "data": {
+            "location_sharing_enabled": new_status,
+            "location_status": worker_profile.location_status,
+            "updated_at": worker_profile.location_sharing_updated_at.isoformat() if worker_profile.location_sharing_updated_at else None
+        }
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def get_worker_location_info(request):
+    """
+    الحصول على معلومات الموقع للعامل
+    GET /api/users/location-info/
+    """
+    if not request.user.is_worker:
+        return Response({
+            "code": "not_worker",
+            "detail": "هذا العضو ليس عاملاً"
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        worker_profile = request.user.worker_profile
+    except WorkerProfile.DoesNotExist:
+        return Response({
+            "code": "profile_not_found",
+            "detail": "ملف العامل غير موجود"
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+    # تحديث حالة الموقع قبل الإرجاع
+    worker_profile.update_location_status()
+    
+    return Response({
+        "success": True,
+        "data": {
+            "location_sharing_enabled": worker_profile.location_sharing_enabled,
+            "location_status": worker_profile.location_status,
+            "current_latitude": float(worker_profile.current_latitude) if worker_profile.current_latitude else None,
+            "current_longitude": float(worker_profile.current_longitude) if worker_profile.current_longitude else None,
+            "location_accuracy": worker_profile.location_accuracy,
+            "last_updated": worker_profile.location_last_updated.isoformat() if worker_profile.location_last_updated else None,
+            "is_location_fresh": worker_profile.is_location_fresh(),
+            "is_available_with_location": worker_profile.is_currently_available_with_location
+        }
+    }, status=status.HTTP_200_OK)

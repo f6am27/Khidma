@@ -1,10 +1,12 @@
-# users/urls.py
+# users/urls.py - الملف الكامل
 from django.urls import path
 from .views import (
     RegisterView, VerifyView, LoginView,
     PasswordResetStartView, PasswordResetConfirmView,
     ResendRegisterOTPView, ResendPasswordResetOTPView,
-    CompleteOnboardingView, UserProfileView
+    CompleteOnboardingView, UserProfileView,
+    WorkerProfileView, ClientProfileView, WorkerOnboardingView,
+    update_worker_location, toggle_location_sharing, get_worker_location_info
 )
 from .upload_views import (
     upload_profile_image,
@@ -31,13 +33,23 @@ urlpatterns = [
 
     # ====== إكمال بيانات المستخدم ======
     path('onboarding/complete/', CompleteOnboardingView.as_view(), name='complete_onboarding'),
+    path('worker-onboarding/', WorkerOnboardingView.as_view(), name='worker_onboarding'),
 
-    # ====== ملف المستخدم ======
+    # ====== ملف المستخدم الأساسي ======
     path('profile/', UserProfileView.as_view(), name='user_profile'),
+
+    # ====== ملفات التفصيلية للمستخدمين ======
+    path('worker-profile/', WorkerProfileView.as_view(), name='worker_profile'),
+    path('client-profile/', ClientProfileView.as_view(), name='client_profile'),
 
     # ====== مسارات إدارة الصور ======
     path('upload-profile-image/', upload_profile_image, name='upload_profile_image'),
     path('delete-profile-image/', delete_profile_image, name='delete_profile_image'),
     path('profile-image/', get_profile_image, name='get_profile_image'),
     path('image-upload-info/', get_image_upload_info, name='get_image_upload_info'),
+
+    # ====== مسارات إدارة المواقع (للعمال فقط) ======
+    path('update-location/', update_worker_location, name='update_worker_location'),
+    path('toggle-location-sharing/', toggle_location_sharing, name='toggle_location_sharing'),
+    path('location-info/', get_worker_location_info, name='get_worker_location_info'),
 ]

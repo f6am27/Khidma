@@ -182,3 +182,124 @@ class ClientProfileSerializer(serializers.ModelSerializer):
         model = ClientProfile
         fields = '__all__'
         read_only_fields = ['user', 'total_tasks_published', 'total_tasks_completed', 'total_amount_spent']
+
+# إضافة هذه الـ Serializers إلى ملف users/serializers.py الموجود
+
+class WorkerProfileUpdateSerializer(serializers.ModelSerializer):
+    """
+    تحديث ملف العامل
+    """
+    # حقول من User
+    first_name = serializers.CharField(source='user.first_name', max_length=150)
+    last_name = serializers.CharField(source='user.last_name', max_length=150, required=False, allow_blank=True)
+    
+    class Meta:
+        model = WorkerProfile
+        fields = [
+            'first_name', 'last_name', 'bio', 'service_area', 
+            'service_category', 'base_price', 'available_days',
+            'work_start_time', 'work_end_time', 'is_available'
+        ]
+    
+    def update(self, instance, validated_data):
+        # استخراج بيانات User
+        user_data = validated_data.pop('user', {})
+        
+        # تحديث بيانات User
+        if user_data:
+            user = instance.user
+            for key, value in user_data.items():
+                setattr(user, key, value)
+            user.save()
+        
+        # تحديث بيانات WorkerProfile
+        for key, value in validated_data.items():
+            setattr(instance, key, value)
+        instance.save()
+        
+        return instance
+
+
+class ClientProfileUpdateSerializer(serializers.ModelSerializer):
+    """
+    تحديث ملف العميل
+    """
+    # حقول من User
+    first_name = serializers.CharField(source='user.first_name', max_length=150)
+    last_name = serializers.CharField(source='user.last_name', max_length=150, required=False, allow_blank=True)
+    
+    class Meta:
+        model = ClientProfile
+        fields = [
+            'first_name', 'last_name', 'bio', 'date_of_birth',
+            'gender', 'address', 'emergency_contact', 'preferred_language',
+            'notifications_enabled'
+        ]
+    
+    def update(self, instance, validated_data):
+        # استخراج بيانات User
+        user_data = validated_data.pop('user', {})
+        
+        # تحديث بيانات User
+        if user_data:
+            user = instance.user
+            for key, value in user_data.items():
+                setattr(user, key, value)
+            user.save()
+        
+        # تحديث بيانات ClientProfile
+        for key, value in validated_data.items():
+            setattr(instance, key, value)
+        instance.save()
+        
+        return instance
+
+
+class WorkerOnboardingSerializer(serializers.ModelSerializer):
+    """
+    إكمال Onboarding للعامل
+    """
+    first_name = serializers.CharField(source='user.first_name')
+    last_name = serializers.CharField(source='user.last_name', required=False, allow_blank=True)
+    
+    class Meta:
+        model = WorkerProfile
+        fields = [
+            'first_name', 'last_name', 'bio', 'service_area',
+            'service_category', 'base_price', 'available_days',
+            'work_start_time', 'work_end_time'
+        ]
+    
+    def create(self, validated_data):
+        user_data = validated_data.pop('user', {})
+        user = self.context['request'].user
+        
+        # تحديث بيانات User
+        for key, value in user_data.items():
+            setattr(user, key, value)
+        user.onboarding_completed = True
+        user.save()
+        
+        # إنشاء WorkerProfile
+        worker_profile = WorkerProfile.objects.create(
+            user=user,
+            **validated_data
+        )
+        
+        return worker_profile
+
+
+class LocationUpdateSerializer(serializers.Serializer):
+    """
+    تحديث موقع العامل
+    """
+    latitude = serializers.DecimalField(max_digits=9, decimal_places=6)
+    longitude = serializers.DecimalField(max_digits=9, decimal_places=6)
+    accuracy = serializers.FloatField(required=False, allow_null=True)
+
+
+class LocationSharingToggleSerializer(serializers.Serializer):
+    """
+    تفعيل/إلغاء تفعيل مشاركة الموقع
+    """
+    enabled = serializers.BooleanField()
