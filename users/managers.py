@@ -20,10 +20,11 @@ class UserManager(BaseUserManager):
             if '@' not in identifier:
                 raise ValueError('Admin users must use email')
             email = self.normalize_email(identifier)
-            user = self.model(email=email, role=role, **extra_fields)
+            # للأدمن: استخدام email في User مباشرة، بدون phone
+            user = self.model(email=email, phone=None, role=role, **extra_fields)
         else:
-            # client or worker
-            user = self.model(phone=identifier, role=role, **extra_fields)
+            # client or worker: استخدام phone فقط، email فارغ
+            user = self.model(phone=identifier, email=None, role=role, **extra_fields)
         
         user.set_password(password)
         user.save(using=self._db)
@@ -38,13 +39,14 @@ class UserManager(BaseUserManager):
     def create_superuser(self, email=None, password=None, **extra_fields):
         """إنشاء مستخدم فائق (admin)"""
         if not email:
-            raise ValueError('Admin must have email')
+            raise ValueError('Superuser must have email')
         
         # إزالة role إذا كان موجود في extra_fields لتجنب التضارب
         extra_fields.pop('role', None)
             
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
+        extra_fields.setdefault('is_verified', True)  # الأدمن محقق تلقائياً
         
         if extra_fields.get('is_staff') is not True:
             raise ValueError('Superuser must have is_staff=True.')
@@ -67,4 +69,5 @@ class UserManager(BaseUserManager):
         """إنشاء أدمن"""
         extra_fields.setdefault('role', 'admin')
         extra_fields.setdefault('is_staff', True)
+        extra_fields.setdefault('is_verified', True)  # الأدمن محقق تلقائياً
         return self.create_user(email, password, 'admin', **extra_fields)

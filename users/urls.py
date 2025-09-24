@@ -14,6 +14,8 @@ from .upload_views import (
     get_profile_image,
     get_image_upload_info
 )
+from rest_framework_simplejwt.views import TokenRefreshView
+
 
 app_name = 'users'
 
@@ -22,6 +24,8 @@ urlpatterns = [
     path('register/', RegisterView.as_view(), name='register'),
     path('verify/', VerifyView.as_view(), name='verify'),
     path('login/', LoginView.as_view(), name='login'),
+    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+
 
     # ====== استعادة كلمة المرور ======
     path('password/reset/', PasswordResetStartView.as_view(), name='password_reset'),

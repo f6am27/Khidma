@@ -16,8 +16,12 @@ class User(AbstractUser):
     # إزالة username الافتراضي
     username = None
     
-    # إزالة email من AbstractUser
-    email = None
+    # حقل email (للأدمن إجباري، للآخرين اختياري)
+    email = models.EmailField(
+        unique=True,
+        null=True, blank=True,
+        help_text="البريد الإلكتروني - للأدمن إجباري، للآخرين اختياري"
+    )
     
     # الحقول الأساسية
     phone = models.CharField(
@@ -55,8 +59,8 @@ class User(AbstractUser):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
-    # تحديد حقل تسجيل الدخول
-    USERNAME_FIELD = 'phone'
+    # تحديد حقل تسجيل الدخول للأدمن
+    USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['first_name']
     
     # استخدام المدير المخصص
@@ -74,6 +78,12 @@ class User(AbstractUser):
         if self.role in ['client', 'worker']:
             if not self.phone:
                 raise ValidationError("Client/Worker must have phone")
+            # للعملاء والعمال: email اختياري
+                
+        elif self.role == 'admin':
+            if not self.email:
+                raise ValidationError("Admin must have email")
+            # للأدمن: phone اختياري
     
     def save(self, *args, **kwargs):
         self.clean()
@@ -81,11 +91,7 @@ class User(AbstractUser):
     
     def __str__(self):
         if self.role == 'admin':
-            # للأدمن نعرض email من AdminProfile
-            try:
-                return f"{self.get_full_name() or self.admin_profile.email} (Admin)"
-            except:
-                return f"{self.get_full_name()} (Admin)"
+            return f"{self.get_full_name() or self.email} (Admin)"
         else:
             return f"{self.get_full_name() or self.phone} ({self.role})"
     
@@ -105,16 +111,13 @@ class User(AbstractUser):
     def display_identifier(self):
         """معرف العرض (phone أو email)"""
         if self.role == 'admin':
-            try:
-                return self.admin_profile.email
-            except:
-                return self.phone or "No identifier"
-        return self.phone
+            return self.email or "No Email"
+        return self.phone or "No Phone"
 
 
 class AdminProfile(models.Model):
     """
-    Admin Profile - بسيط للوحة التحكم
+    Admin Profile - معلومات إضافية للأدمن (اختياري الآن)
     """
     user = models.OneToOneField(
         User, 
@@ -123,15 +126,10 @@ class AdminProfile(models.Model):
         limit_choices_to={'role': 'admin'}
     )
     
-    # email للأدمن فقط مع unique=True
-    email = models.EmailField(
-        unique=True,
-        help_text="البريد الإلكتروني للأدمن"
-    )
-    
-    # معلومات بسيطة
+    # معلومات إضافية (email الأساسي في User الآن)
     display_name = models.CharField(
         max_length=100,
+        blank=True,
         help_text="اسم العرض في لوحة التحكم"
     )
     bio = models.TextField(
@@ -173,7 +171,7 @@ class AdminProfile(models.Model):
         ordering = ['-created_at']
     
     def __str__(self):
-        return f"Admin: {self.display_name} ({self.email})"
+        return f"Admin: {self.display_name} ({self.user.email})"
 
 
 class WorkerProfile(models.Model):
