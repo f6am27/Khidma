@@ -376,7 +376,6 @@ class WorkerProfile(models.Model):
             self.is_location_fresh()
         )
 
-
 class ClientProfile(models.Model):
     """
     Client Profile - اختياري للعملاء
@@ -389,14 +388,11 @@ class ClientProfile(models.Model):
     )
     
     # معلومات شخصية (اختيارية)
-    bio = models.TextField(blank=True)
-    date_of_birth = models.DateField(null=True, blank=True)
     gender = models.CharField(
         max_length=10, 
         choices=[
             ('male', 'Male'),
             ('female', 'Female'),
-            ('other', 'Other'),
         ],
         blank=True
     )
@@ -419,15 +415,6 @@ class ClientProfile(models.Model):
     )
     
     # الإعدادات
-    preferred_language = models.CharField(
-        max_length=10,
-        choices=[
-            ('fr', 'Français'),
-            ('ar', 'العربية'),
-            ('en', 'English'),
-        ],
-        default='fr'
-    )
     notifications_enabled = models.BooleanField(default=True)
     
     # تواريخ

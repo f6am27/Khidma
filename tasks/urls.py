@@ -5,7 +5,7 @@ from . import views
 urlpatterns = [
     # Client endpoints - Task management
     path('create/', views.ServiceRequestCreateView.as_view(), name='create-service-request'),  # POST - Create task
-    path('my-tasks/', views.ClientTasksListView.as_view(), name='client-tasks'),  # GET - My tasks
+    path('my-tasks/', views.ClientTasksListView.as_view(), name='my-tasks'),
     path('<int:pk>/', views.ServiceRequestDetailView.as_view(), name='service-request-detail'),  # GET - Task details
     path('<int:pk>/update/', views.ServiceRequestUpdateView.as_view(), name='task-update'),  # PUT - Update task
     

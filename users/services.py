@@ -64,18 +64,25 @@ def _twilio_check_code(phone: str, code: str) -> bool:
 # تسجيل مستخدم جديد
 # ==============================
 
-def start_registration(username: str, phone: str, password: str, lang: str = "ar", role: str = "client"):
-    """بدء عملية التسجيل - إرسال OTP"""
+# في users/services.py - حدث start_registration
+
+def start_registration(username: str, phone: str, password: str, lang: str = "ar", role: str = "client", ip_address: str = None):
+    """بدء عملية التسجيل - إرسال OTP مع Rate Limiting محسن"""
     phone = normalize_phone(phone)
 
-    # التحقق من عدم وجود المستخدم مسبقاً
+    # فحص Rate Limiting العالمي أولاً
+    rate_check = _check_global_rate_limit(phone, ip_address)
+    if "error" in rate_check:
+        return rate_check
+
+    # باقي الفحوصات الموجودة...
     if User.objects.filter(first_name=username).exists():
         return {"error": ("username_taken", "اسم المستخدم مستخدم مسبقاً")}
     
     if User.objects.filter(phone=phone).exists():
         return {"error": ("phone_already_registered", "الهاتف مسجل مسبقاً")}
 
-    # فحص مهلة إعادة الإرسال
+    # فحص مهلة إعادة الإرسال (الكود الموجود)
     k = _otp_key(phone)
     existing = cache.get(k)
     now = int(time.time())
@@ -89,26 +96,25 @@ def start_registration(username: str, phone: str, password: str, lang: str = "ar
     # إرسال OTP عبر Twilio
     try:
         _twilio_send_verification(phone, lang=lang)
+        
+        # تسجيل المحاولة في الـ rate limiter
+        _record_otp_attempt(phone, ip_address)
+        
     except Exception:
         return {"error": ("otp_provider_unavailable", "خدمة التحقق غير متاحة حالياً")}
 
-    # تخزين البيانات مؤقتاً في cache
-    cache.set(
-        k,
-        {
-            "username": username,
-            "password": password,
-            "lang": lang,
-            "role": role,
-            "attempts": 0,
-            "last_sent": now,
-            "expires_at": now + ttl,
-        },
-        timeout=ttl,
-    )
+    # باقي الكود كما هو...
+    cache.set(k, {
+        "username": username,
+        "password": password,
+        "lang": lang,
+        "role": role,
+        "attempts": 0,
+        "last_sent": now,
+        "expires_at": now + ttl,
+    }, timeout=ttl)
     
     return {"ok": {"resend_after_sec": cooldown, "expires_in_sec": ttl}}
-
 
 def verify_otp(phone: str, code: str):
     """التحقق من رمز OTP وإنشاء المستخدم"""
@@ -175,9 +181,14 @@ def verify_otp(phone: str, code: str):
 # استعادة كلمة المرور
 # ==============================
 
-def start_password_reset(phone: str, lang: str = "ar"):
-    """بدء عملية استعادة كلمة المرور"""
+def start_password_reset(phone: str, lang: str = "ar", ip_address: str = None):
+    """بدء عملية استعادة كلمة المرور مع Rate Limiting محسن"""
     phone = normalize_phone(phone)
+
+    # فحص Rate Limiting العالمي أولاً
+    rate_check = _check_global_rate_limit(phone, ip_address)
+    if "error" in rate_check:
+        return rate_check
 
     # التحقق من وجود المستخدم
     try:
@@ -185,7 +196,7 @@ def start_password_reset(phone: str, lang: str = "ar"):
     except User.DoesNotExist:
         return {"error": ("user_not_found", "لا يوجد مستخدم بهذا الهاتف")}
 
-    # فحص مهلة إعادة الإرسال
+    # فحص مهلة إعادة الإرسال (Session-based)
     k = _pwd_key(phone)
     now = int(time.time())
     existing = cache.get(k)
@@ -199,6 +210,10 @@ def start_password_reset(phone: str, lang: str = "ar"):
     # إرسال OTP
     try:
         _twilio_send_verification(phone, lang=lang)
+        
+        # تسجيل المحاولة في الـ rate limiter العالمي
+        _record_otp_attempt(phone, ip_address)
+        
     except Exception:
         return {"error": ("otp_provider_unavailable", "تعذر إرسال رمز الاسترجاع حالياً")}
 
@@ -216,7 +231,6 @@ def start_password_reset(phone: str, lang: str = "ar"):
     )
 
     return {"ok": {"status": "otp_sent", "resend_after_sec": cooldown, "expires_in_sec": ttl}}
-
 
 def confirm_password_reset(phone: str, code: str, new_password: str):
     """تأكيد استعادة كلمة المرور"""
@@ -272,7 +286,7 @@ def confirm_password_reset(phone: str, code: str, new_password: str):
 # إعادة إرسال OTP
 # ==============================
 
-def _resend_common(cache_key: str, phone: str, lang: str = "ar"):
+def _resend_common(cache_key: str, phone: str, lang: str = "ar", ip_address: str = None):
     """وظيفة مشتركة لإعادة إرسال OTP"""
     data = cache.get(cache_key)
     if not data:
@@ -288,6 +302,11 @@ def _resend_common(cache_key: str, phone: str, lang: str = "ar"):
 
     try:
         _twilio_send_verification(phone, lang=lang)
+        
+        # تسجيل المحاولة في الـ rate limiter العالمي
+        if ip_address:
+            _record_otp_attempt(phone, ip_address)
+            
     except Exception:
         return {"error": ("otp_provider_unavailable", "تعذّر إرسال الرمز حالياً")}
 
@@ -296,27 +315,102 @@ def _resend_common(cache_key: str, phone: str, lang: str = "ar"):
     cache.set(cache_key, data, timeout=ttl)
 
     return {"ok": {"status": "otp_resent", "resend_after_sec": cooldown, "expires_in_sec": ttl}}
-
-
-def resend_registration(phone: str, lang: str = "ar"):
-    """إعادة إرسال رمز التسجيل"""
+def resend_registration(phone: str, lang: str = "ar", ip_address: str = None):
+    """إعادة إرسال رمز التسجيل مع Rate Limiting"""
     phone = normalize_phone(phone)
+    
+    # فحص Rate Limiting العالمي أولاً
+    if ip_address:
+        rate_check = _check_global_rate_limit(phone, ip_address)
+        if "error" in rate_check:
+            return rate_check
+    
     k = _otp_key(phone)
-    res = _resend_common(k, phone, lang=lang)
+    res = _resend_common(k, phone, lang=lang, ip_address=ip_address)
     
     if "error" in res and res["error"][0] == "not_found":
         return {"error": ("no_pending_verification", "لا يوجد تحقق تسجيل جارٍ لهذا الهاتف")}
     
     return res
 
-
-def resend_password_reset(phone: str, lang: str = "ar"):
-    """إعادة إرسال رمز استعادة كلمة المرور"""
+def resend_password_reset(phone: str, lang: str = "ar", ip_address: str = None):
+    """إعادة إرسال رمز استعادة كلمة المرور مع Rate Limiting"""
     phone = normalize_phone(phone)
+    
+    # فحص Rate Limiting العالمي أولاً
+    if ip_address:
+        rate_check = _check_global_rate_limit(phone, ip_address)
+        if "error" in rate_check:
+            return rate_check
+    
     k = _pwd_key(phone)
-    res = _resend_common(k, phone, lang=lang)
+    res = _resend_common(k, phone, lang=lang, ip_address=ip_address)
     
     if "error" in res and res["error"][0] == "not_found":
         return {"error": ("no_pending_reset", "لا توجد عملية استرجاع جارية لهذا الهاتف")}
     
     return res
+
+# في users/services.py - أضف هذه الوظائف
+
+def _get_global_rate_limit_key(phone, request_type='otp'):
+    """مفتاح cache للـ rate limiting العالمي"""
+    return f"global_rate_limit:{request_type}:{phone}"
+
+def _get_ip_rate_limit_key(ip_address, request_type='otp'):
+    """مفتاح cache لـ rate limiting حسب IP"""
+    return f"ip_rate_limit:{request_type}:{ip_address}"
+
+def _check_global_rate_limit(phone, ip_address=None):
+    """فحص Rate Limiting العالمي"""
+    from django.conf import settings
+    from django.core.cache import cache
+    import time
+    
+    rate_config = getattr(settings, 'GLOBAL_OTP_RATE_LIMIT', {})
+    max_phone_attempts = rate_config.get('MAX_ATTEMPTS_PER_PHONE_PER_HOUR', 10)
+    max_ip_attempts = rate_config.get('MAX_ATTEMPTS_PER_IP_PER_HOUR', 20)
+    
+    now = int(time.time())
+    hour_window = 3600  # ساعة واحدة
+    
+    # فحص rate limit للهاتف
+    phone_key = _get_global_rate_limit_key(phone)
+    phone_attempts = cache.get(phone_key, [])
+    
+    # تنظيف المحاولات القديمة (أكثر من ساعة)
+    phone_attempts = [attempt for attempt in phone_attempts if now - attempt < hour_window]
+    
+    if len(phone_attempts) >= max_phone_attempts:
+        return {"error": ("rate_limit_phone", f"تم تجاوز حد الإرسال لهذا الرقم. حاول بعد ساعة")}
+    
+    # فحص rate limit للـ IP إذا متوفر
+    if ip_address:
+        ip_key = _get_ip_rate_limit_key(ip_address)
+        ip_attempts = cache.get(ip_key, [])
+        ip_attempts = [attempt for attempt in ip_attempts if now - attempt < hour_window]
+        
+        if len(ip_attempts) >= max_ip_attempts:
+            return {"error": ("rate_limit_ip", f"تم تجاوز حد الإرسال من هذا العنوان. حاول بعد ساعة")}
+    
+    return {"ok": True}
+
+def _record_otp_attempt(phone, ip_address=None):
+    """تسجيل محاولة إرسال OTP"""
+    from django.core.cache import cache
+    import time
+    
+    now = int(time.time())
+    
+    # تسجيل محاولة للهاتف
+    phone_key = _get_global_rate_limit_key(phone)
+    phone_attempts = cache.get(phone_key, [])
+    phone_attempts.append(now)
+    cache.set(phone_key, phone_attempts, timeout=3600)  # ساعة واحدة
+    
+    # تسجيل محاولة للـ IP
+    if ip_address:
+        ip_key = _get_ip_rate_limit_key(ip_address)
+        ip_attempts = cache.get(ip_key, [])
+        ip_attempts.append(now)
+        cache.set(ip_key, ip_attempts, timeout=3600)

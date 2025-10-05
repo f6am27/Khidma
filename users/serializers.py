@@ -59,6 +59,8 @@ class LoginSerializer(serializers.Serializer):
         if not identifier or not password:
             raise serializers.ValidationError("Phone/username and password required")
 
+        user = None
+        
         # محاولة التحقق من أنه رقم هاتف
         try:
             phone_e164 = to_e164(identifier)
@@ -66,13 +68,21 @@ class LoginSerializer(serializers.Serializer):
             try:
                 user = User.objects.get(phone=phone_e164)
             except User.DoesNotExist:
-                raise serializers.ValidationError("Invalid credentials")
+                pass  # لم يجد بالهاتف، سيجرب first_name
         except ValueError:
-            # ليس رقم هاتف صالح، إذن هو first_name
+            # ليس رقم هاتف صالح
+            pass
+        
+        # إذا لم يجد بالهاتف، جرب first_name
+        if not user:
             try:
                 user = User.objects.get(first_name=identifier)
             except User.DoesNotExist:
-                raise serializers.ValidationError("Invalid credentials")
+                pass
+        
+        # إذا لم يجد المستخدم بأي طريقة
+        if not user:
+            raise serializers.ValidationError("Invalid credentials")
 
         # التحقق من كلمة المرور
         if not user.check_password(password):
@@ -83,8 +93,7 @@ class LoginSerializer(serializers.Serializer):
 
         attrs['user'] = user
         return attrs
-
-
+    
 class ResendOTPSerializer(serializers.Serializer):
     """
     إعادة إرسال رمز OTP

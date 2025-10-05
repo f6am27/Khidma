@@ -28,11 +28,9 @@ class ServiceRequest(models.Model):
     )
     
     # Pricing - no minimum/maximum restrictions
-    budget = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        validators=[MinValueValidator(0.01)],
-        help_text="Budget proposé en MRU"
+    budget = models.IntegerField(
+    validators=[MinValueValidator(50)],
+    help_text="Budget proposé en MRU"
     )
     
     # Location and timing

@@ -23,6 +23,7 @@ from .services import (
 )
 
 
+# تحديث RegisterView
 class RegisterView(APIView):
     """
     تسجيل مستخدم جديد
@@ -38,8 +39,19 @@ class RegisterView(APIView):
                 "detail": serializer.errors
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # بدء عملية التسجيل وإرسال OTP
-        result = start_registration(**serializer.validated_data)
+        # الحصول على IP address
+        ip_address = get_client_ip(request)
+        
+        # بدء عملية التسجيل وإرسال OTP مع IP
+        validated_data = serializer.validated_data
+        result = start_registration(
+            username=validated_data['username'],
+            phone=validated_data['phone'],
+            password=validated_data['password'],
+            lang=validated_data.get('lang', 'ar'),
+            role=validated_data.get('role', 'client'),
+            ip_address=ip_address
+        )
         
         if "error" in result:
             error_code, error_detail = result["error"]
@@ -52,7 +64,6 @@ class RegisterView(APIView):
             "status": "otp_sent", 
             **result["ok"]
         }, status=status.HTTP_201_CREATED)
-
 
 class VerifyView(APIView):
     """
@@ -196,6 +207,7 @@ class PasswordResetConfirmView(APIView):
         return Response(result["ok"], status=status.HTTP_200_OK)
 
 
+# تحديث ResendRegisterOTPView
 class ResendRegisterOTPView(APIView):
     """
     إعادة إرسال رمز التسجيل
@@ -211,7 +223,15 @@ class ResendRegisterOTPView(APIView):
                 "detail": serializer.errors
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        result = resend_registration(**serializer.validated_data)
+        # الحصول على IP address
+        ip_address = get_client_ip(request)
+        
+        # تحديث resend_registration لتدعم IP
+        result = resend_registration(
+            phone=serializer.validated_data['phone'],
+            lang=serializer.validated_data.get('lang', 'ar'),
+            ip_address=ip_address
+        )
         
         if "error" in result:
             error_code, error_detail = result["error"]
@@ -221,8 +241,9 @@ class ResendRegisterOTPView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
         
         return Response(result["ok"], status=status.HTTP_200_OK)
+    
 
-
+# تحديث ResendPasswordResetOTPView
 class ResendPasswordResetOTPView(APIView):
     """
     إعادة إرسال رمز استعادة كلمة المرور
@@ -238,7 +259,15 @@ class ResendPasswordResetOTPView(APIView):
                 "detail": serializer.errors
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        result = resend_password_reset(**serializer.validated_data)
+        # الحصول على IP address
+        ip_address = get_client_ip(request)
+        
+        # تحديث resend_password_reset لتدعم IP
+        result = resend_password_reset(
+            phone=serializer.validated_data['phone'],
+            lang=serializer.validated_data.get('lang', 'ar'),
+            ip_address=ip_address
+        )
         
         if "error" in result:
             error_code, error_detail = result["error"]
@@ -248,7 +277,6 @@ class ResendPasswordResetOTPView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
         
         return Response(result["ok"], status=status.HTTP_200_OK)
-
 
 class CompleteOnboardingView(APIView):
     """
@@ -615,3 +643,14 @@ def get_worker_location_info(request):
             "is_available_with_location": worker_profile.is_currently_available_with_location
         }
     }, status=status.HTTP_200_OK)
+
+# في users/views.py - أضف helper function للحصول على IP
+
+def get_client_ip(request):
+    """الحصول على عنوان IP الحقيقي للعميل"""
+    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    if x_forwarded_for:
+        ip = x_forwarded_for.split(',')[0].strip()
+    else:
+        ip = request.META.get('REMOTE_ADDR')
+    return ip

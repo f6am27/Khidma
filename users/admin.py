@@ -137,7 +137,6 @@ class WorkerProfileAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         return super().get_queryset(request).select_related('user')
 
-
 @admin.register(ClientProfile)
 class ClientProfileAdmin(admin.ModelAdmin):
     """إدارة ملفات العملاء"""
@@ -147,10 +146,9 @@ class ClientProfileAdmin(admin.ModelAdmin):
         'total_tasks_published', 'total_tasks_completed', 
         'success_rate_display', 'total_amount_spent', 'created_at'
     ]
-    list_filter = ['gender', 'preferred_language', 'notifications_enabled', 'created_at']
+    list_filter = ['gender', 'notifications_enabled', 'created_at']  # ✅ حذف preferred_language
     search_fields = [
-        'user__first_name', 'user__last_name', 'user__phone',
-        'bio', 'address'
+        'user__first_name', 'user__last_name', 'user__phone', 'address'  # ✅ حذف bio
     ]
     ordering = ['-created_at']
     
@@ -159,7 +157,7 @@ class ClientProfileAdmin(admin.ModelAdmin):
             'fields': ('user',)
         }),
         ('Personal Info', {
-            'fields': ('bio', 'date_of_birth', 'gender')
+            'fields': ('gender',)  # ✅ حذف bio, date_of_birth
         }),
         ('Contact Info', {
             'fields': ('address', 'emergency_contact')
@@ -172,7 +170,7 @@ class ClientProfileAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
         ('Preferences', {
-            'fields': ('preferred_language', 'notifications_enabled'),
+            'fields': ('notifications_enabled',),  # ✅ حذف preferred_language
             'classes': ('collapse',)
         }),
     )

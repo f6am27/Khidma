@@ -2,7 +2,7 @@
 from rest_framework import serializers
 from django.utils import timezone
 from .models import FavoriteWorker, ClientSettings
-from users.models import User
+from users.models import User,ClientProfile  
 
 
 # clients/serializers.py - مُصحح للنظام الجديد
@@ -10,62 +10,60 @@ from rest_framework import serializers
 from django.utils import timezone
 from .models import FavoriteWorker, ClientSettings
 from users.models import User
-
-
 class ClientProfileSerializer(serializers.ModelSerializer):
     """
-    Client profile serializer for detailed view with partial update support
-    محول ملف العميل المفصل مع دعم التحديث الجزئي
+    Client profile serializer - simplified version
     """
     # User information
     phone = serializers.CharField(read_only=True)
     first_name = serializers.CharField(required=False)
     last_name = serializers.CharField(required=False)
     
-    # Client profile data
-    bio = serializers.SerializerMethodField()
-    date_of_birth = serializers.SerializerMethodField()
-    gender = serializers.SerializerMethodField()
-    address = serializers.SerializerMethodField()
-    emergency_contact = serializers.SerializerMethodField()
-    profile_image_url = serializers.SerializerMethodField()
-    total_tasks_published = serializers.SerializerMethodField()
-    total_tasks_completed = serializers.SerializerMethodField()
-    total_amount_spent = serializers.SerializerMethodField()
-    preferred_language = serializers.SerializerMethodField()
-    notifications_enabled = serializers.SerializerMethodField()
+    # Client profile data - writable
+    gender = serializers.ChoiceField(
+        choices=['male', 'female'],
+        required=False,
+        allow_blank=True
+    )
+    address = serializers.CharField(required=False, allow_blank=True)
+    emergency_contact = serializers.CharField(
+        max_length=20,
+        required=False,
+        allow_blank=True
+    )
+    notifications_enabled = serializers.BooleanField(required=False)
     
-    # Computed fields
-    full_name = serializers.SerializerMethodField()
-    member_since = serializers.SerializerMethodField()
-    success_rate = serializers.SerializerMethodField()
+    # Read-only computed fields
+    profile_image_url = serializers.SerializerMethodField(read_only=True)
+    total_tasks_published = serializers.SerializerMethodField(read_only=True)
+    total_tasks_completed = serializers.SerializerMethodField(read_only=True)
+    total_amount_spent = serializers.SerializerMethodField(read_only=True)
+    full_name = serializers.SerializerMethodField(read_only=True)
+    member_since = serializers.SerializerMethodField(read_only=True)
+    success_rate = serializers.SerializerMethodField(read_only=True)
     
     class Meta:
         model = User
         fields = [
             'id', 'phone', 'first_name', 'last_name', 'full_name',
-            'bio', 'date_of_birth', 'gender', 'address', 'emergency_contact',
+            'gender', 'address', 'emergency_contact',
             'profile_image_url', 'is_verified', 'total_tasks_published',
             'total_tasks_completed', 'total_amount_spent', 'success_rate',
-            'preferred_language', 'notifications_enabled', 'member_since',
+            'notifications_enabled', 'member_since',
             'created_at', 'updated_at'
         ]
         read_only_fields = [
             'id', 'phone', 'is_verified', 'total_tasks_published',
             'total_tasks_completed', 'total_amount_spent', 'success_rate',
-            'member_since', 'created_at', 'updated_at'
+            'member_since', 'created_at', 'updated_at', 'profile_image_url',
+            'full_name'
         ]
     
     def __init__(self, *args, **kwargs):
-        """Initialize with partial=True for updates"""
         super().__init__(*args, **kwargs)
         self.partial = True
-        
-        # Make updateable fields optional
-        for field_name in ['first_name', 'last_name']:
-            if field_name in self.fields:
-                self.fields[field_name].required = False
     
+    # Getter methods
     def get_full_name(self, obj):
         return obj.get_full_name() or obj.phone
     
@@ -80,22 +78,6 @@ class ClientProfileSerializer(serializers.ModelSerializer):
             return obj.client_profile.profile_image.url
         return None
     
-    # ClientProfile field getters
-    def get_bio(self, obj):
-        return obj.client_profile.bio if hasattr(obj, 'client_profile') else ""
-    
-    def get_date_of_birth(self, obj):
-        return obj.client_profile.date_of_birth if hasattr(obj, 'client_profile') else None
-    
-    def get_gender(self, obj):
-        return obj.client_profile.gender if hasattr(obj, 'client_profile') else ""
-    
-    def get_address(self, obj):
-        return obj.client_profile.address if hasattr(obj, 'client_profile') else ""
-    
-    def get_emergency_contact(self, obj):
-        return obj.client_profile.emergency_contact if hasattr(obj, 'client_profile') else ""
-    
     def get_total_tasks_published(self, obj):
         return obj.client_profile.total_tasks_published if hasattr(obj, 'client_profile') else 0
     
@@ -105,12 +87,6 @@ class ClientProfileSerializer(serializers.ModelSerializer):
     def get_total_amount_spent(self, obj):
         return str(obj.client_profile.total_amount_spent) if hasattr(obj, 'client_profile') else "0.00"
     
-    def get_preferred_language(self, obj):
-        return obj.client_profile.preferred_language if hasattr(obj, 'client_profile') else "fr"
-    
-    def get_notifications_enabled(self, obj):
-        return obj.client_profile.notifications_enabled if hasattr(obj, 'client_profile') else True
-    
     def get_success_rate(self, obj):
         if hasattr(obj, 'client_profile'):
             profile = obj.client_profile
@@ -119,18 +95,53 @@ class ClientProfileSerializer(serializers.ModelSerializer):
             return round((profile.total_tasks_completed / profile.total_tasks_published) * 100, 1)
         return 0.0
     
+    def to_representation(self, instance):
+        """Override to include ClientProfile data in GET response"""
+        data = super().to_representation(instance)
+        
+        # Add ClientProfile fields to response
+        if hasattr(instance, 'client_profile'):
+            profile = instance.client_profile
+            data['gender'] = profile.gender or ''
+            data['address'] = profile.address or ''
+            data['emergency_contact'] = profile.emergency_contact or ''
+            data['notifications_enabled'] = profile.notifications_enabled
+        else:
+            # Defaults if no profile exists
+            data['gender'] = ''
+            data['address'] = ''
+            data['emergency_contact'] = ''
+            data['notifications_enabled'] = True
+        
+        return data
+    
     def update(self, instance, validated_data):
-        """Update user and client profile with nested data (partial support)"""
-        # Update user fields
+        """Update user and client profile"""
+        
+        # 1. Update User fields
         user_fields = ['first_name', 'last_name']
         for field in user_fields:
-            if field in validated_data and validated_data[field] is not None:
+            if field in validated_data:
                 setattr(instance, field, validated_data[field])
         
         instance.save()
+        
+        # 2. Update ClientProfile fields
+        profile, created = ClientProfile.objects.get_or_create(user=instance)
+        
+        profile_fields = ['gender', 'address', 'emergency_contact', 'notifications_enabled']
+        
+        for field in profile_fields:
+            if field in validated_data:
+                setattr(profile, field, validated_data[field])
+        
+        profile.save()
+        
+        # 3. Refresh to get updated data
+        instance.refresh_from_db()
+        
         return instance
-
-
+    
 class FavoriteWorkerSerializer(serializers.ModelSerializer):
     """
     Favorite worker serializer with worker details

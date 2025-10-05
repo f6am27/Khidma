@@ -60,18 +60,32 @@ class ServiceRequestCreateView(generics.CreateAPIView):
 
 
 class ClientTasksListView(generics.ListAPIView):
+    """
+    Get my tasks - works for both client and worker
+    للعميل: يعيد المهام التي أنشأها
+    للعامل: يعيد المهام المقبولة له
+    """
     serializer_class = ServiceRequestListSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['status']
     
     def get_queryset(self):
-        if self.request.user.role != 'client':
-            return ServiceRequest.objects.none()
-        return ServiceRequest.objects.filter(
-            client=self.request.user
-        ).select_related('service_category', 'assigned_worker')
-
+        user = self.request.user
+        
+        # Client: return tasks created by them
+        if user.role == 'client':
+            return ServiceRequest.objects.filter(
+                client=user
+            ).select_related('service_category', 'assigned_worker')
+        
+        # Worker: return tasks assigned to them
+        elif user.role == 'worker':
+            return ServiceRequest.objects.filter(
+                assigned_worker=user
+            ).select_related('service_category', 'client')
+        
+        return ServiceRequest.objects.none()
 
 class ServiceRequestDetailView(generics.RetrieveAPIView):
     serializer_class = ServiceRequestDetailSerializer
