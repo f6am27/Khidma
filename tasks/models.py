@@ -36,11 +36,13 @@ class ServiceRequest(models.Model):
     # Location and timing
     location = models.CharField(max_length=300)
     preferred_time = models.CharField(max_length=100)
+    time_description = models.CharField(max_length=100, blank=True, null=True)  # ← أضف هذا السطر
+
     
     # Location coordinates (optional for GPS location)
-    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    
+    latitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=11, decimal_places=7, null=True, blank=True)
+        
     # Status management
     STATUS_CHOICES = [
         ('published', 'Publiée'),

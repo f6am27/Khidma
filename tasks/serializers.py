@@ -59,13 +59,16 @@ class ServiceRequestListSerializer(serializers.ModelSerializer):
     applicantsCount = serializers.IntegerField(source='applications_count', read_only=True)
     assignedProvider = serializers.SerializerMethodField()
     providerRating = serializers.SerializerMethodField()
+    isUrgent = serializers.BooleanField(source='is_urgent', read_only=True)  # ← أضف
+    timeDescription = serializers.CharField(source='time_description', read_only=True, allow_null=True, required=False)  # ← أضف
 
     class Meta:
         model = ServiceRequest
         fields = [
             'id', 'title', 'description', 'serviceType', 'budget', 
             'location', 'preferredTime', 'status', 'createdAt',
-            'applicantsCount', 'assignedProvider', 'providerRating'
+            'applicantsCount', 'assignedProvider', 'providerRating',
+            'isUrgent', 'timeDescription'  # ← أضف هنا
         ]
         extra_kwargs = {'preferredTime': {'source': 'preferred_time'}}
 
@@ -81,7 +84,6 @@ class ServiceRequestListSerializer(serializers.ModelSerializer):
         if obj.assigned_worker:
             return int(obj.assigned_worker.average_rating)
         return None
-
 # --------------------------------------------------
 # تفاصيل طلب الخدمة
 # --------------------------------------------------
@@ -168,8 +170,8 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
     service_category_id = serializers.IntegerField(write_only=True)
     serviceType = serializers.CharField(write_only=True, required=False)
     preferredTime = serializers.CharField(source='preferred_time', required=False)
-    latitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True, help_text="خط العرض")
-    longitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True, help_text="خط الطول")
+    latitude = serializers.DecimalField(max_digits=10, decimal_places=7, required=False, allow_null=True, help_text="خط العرض")
+    longitude = serializers.DecimalField(max_digits=11, decimal_places=7, required=False, allow_null=True, help_text="خط الطول")
     location_method = serializers.ChoiceField(
         choices=[('current_location', 'الموقع الحالي'), ('select_area', 'اختيار منطقة')],
         write_only=True, required=False, help_text="طريقة تحديد الموقع"
@@ -210,13 +212,16 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
             elif not location:
                 raise serializers.ValidationError({'location': 'يجب تحديد موقع المهمة أو اختيار منطقة'})
         return data
-
+    
     def create(self, validated_data):
         request = self.context['request']
         client = request.user
         location_method = validated_data.pop('location_method', 'select_area')
         area_id = validated_data.pop('area_id', None)
         service_type = validated_data.pop('serviceType', None)
+        
+        # استخراج time_description من الـ request
+        time_desc = request.data.get('timeDescription') or request.data.get('time_description')
 
         if service_type and 'service_category_id' not in validated_data:
             from services.models import ServiceCategory
@@ -234,14 +239,46 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
             **validated_data
         )
 
+        # حفظ الإحداثيات و time_description
         if latitude and longitude:
             service_request.latitude = latitude
             service_request.longitude = longitude
-            service_request.save()
+        
+        if time_desc:
+            service_request.time_description = time_desc
+        
+        service_request.save()
 
         self._notify_relevant_workers(service_request, location_method)
 
         return service_request
+    
+    def update(self, instance, validated_data):
+        request = self.context.get('request')
+        
+        # معالجة service_category_id من serviceType
+        if request and 'service_category_id' in request.data:
+            category_id = request.data.get('service_category_id')
+            if category_id:
+                instance.service_category_id = category_id
+        
+        # تحديث time_description
+        if request:
+            time_desc = request.data.get('timeDescription') or request.data.get('time_description')
+            if time_desc:
+                instance.time_description = time_desc
+        
+        # إزالة الحقول التي لا نريد تحديثها
+        validated_data.pop('location_method', None)
+        validated_data.pop('area_id', None)
+        validated_data.pop('serviceType', None)
+        
+        # تحديث باقي الحقول
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
+        instance.save()
+        return instance
 
     def _notify_relevant_workers(self, task, location_method):
         from users.models import User
