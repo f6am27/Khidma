@@ -130,10 +130,8 @@ class ServiceRequestUpdateView(generics.UpdateAPIView):
                 )
 
 
+
 class AvailableTasksListView(generics.ListAPIView):
-    """
-    تحديث: قائمة المهام المتاحة مع دعم البحث الجغرافي
-    """
     serializer_class = AvailableTaskSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
@@ -169,13 +167,8 @@ class AvailableTasksListView(generics.ListAPIView):
         
         worker_lat = request.query_params.get('lat')
         worker_lng = request.query_params.get('lng')
-        distance_max = request.query_params.get('distance_max', '30')
         sort_by = request.query_params.get('sort_by', 'latest')
-        
-        try:
-            distance_max = float(distance_max)
-        except (ValueError, TypeError):
-            distance_max = 30.0
+        limit = request.query_params.get('limit')
         
         if worker_lat and worker_lng:
             try:
@@ -189,60 +182,65 @@ class AvailableTasksListView(generics.ListAPIView):
                             worker_lat, worker_lng,
                             float(task.latitude), float(task.longitude)
                         )
-                        if distance <= distance_max:
-                            task.calculated_distance = distance
-                            tasks_with_distance.append(task)
+                    else:
+                        distance = None
+                    
+                    task.calculated_distance = distance
+                    tasks_with_distance.append(task)
                 
                 if sort_by == 'nearest':
-                    tasks_with_distance.sort(key=lambda x: x.calculated_distance)
-                    queryset = tasks_with_distance
+                    tasks_with_distance.sort(
+                        key=lambda x: x.calculated_distance if x.calculated_distance is not None else 999999
+                    )
+                elif sort_by == 'budget_low':
+                    tasks_with_distance.sort(key=lambda x: x.budget)
+                elif sort_by == 'budget_high':
+                    tasks_with_distance.sort(key=lambda x: -x.budget)
+                elif sort_by == 'urgent':
+                    tasks_with_distance.sort(key=lambda x: (-x.is_urgent, -x.created_at.timestamp()))
                 else:
-                    queryset = tasks_with_distance
-                    
-            except (ValueError, TypeError):
-                pass
+                    tasks_with_distance.sort(key=lambda x: -x.created_at.timestamp())
+                
+                if limit:
+                    tasks_with_distance = tasks_with_distance[:int(limit)]
+                
+                serializer = self.get_serializer(tasks_with_distance, many=True)
+                return Response({
+                    'count': len(tasks_with_distance),
+                    'results': serializer.data
+                })
+                
+            except (ValueError, TypeError) as e:
+                return Response({'error': f'Invalid coordinates: {str(e)}'}, status=400)
         
-        if sort_by == 'budget_high' and not (worker_lat and worker_lng and sort_by == 'nearest'):
+        if sort_by == 'budget_high':
             queryset = queryset.order_by('-budget')
         elif sort_by == 'budget_low':
             queryset = queryset.order_by('budget')
         elif sort_by == 'urgent':
             queryset = queryset.order_by('-is_urgent', '-created_at')
-        elif sort_by == 'latest' and not (worker_lat and worker_lng and sort_by == 'nearest'):
+        else:
             queryset = queryset.order_by('-created_at')
         
-        if isinstance(queryset, list):
-            from django.core.paginator import Paginator
-            paginator = Paginator(queryset, 20)
-            page_number = request.query_params.get('page', 1)
-            page_obj = paginator.get_page(page_number)
-            serializer = self.get_serializer(page_obj.object_list, many=True)
-            return Response({
-                'count': len(queryset),
-                'next': None,
-                'previous': None,
-                'results': serializer.data,
-                'location_filter_applied': bool(worker_lat and worker_lng),
-                'distance_max_km': distance_max if worker_lat and worker_lng else None
-            })
-        else:
-            page = self.paginate_queryset(queryset)
-            if page is not None:
-                serializer = self.get_serializer(page, many=True)
-                return self.get_paginated_response(serializer.data)
-            serializer = self.get_serializer(queryset, many=True)
-            return Response({'count': len(serializer.data), 'results': serializer.data})
+        if limit:
+            queryset = queryset[:int(limit)]
+        
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            'count': queryset.count() if hasattr(queryset, 'count') else len(queryset),
+            'results': serializer.data
+        })
     
-    def _calculate_distance(self, lat1, lng1, lat2, lng2):
+    @staticmethod
+    def _calculate_distance(lat1, lng1, lat2, lng2):
         lat1, lng1, lat2, lng2 = map(radians, [lat1, lng1, lat2, lng2])
         dlat = lat2 - lat1
         dlng = lng2 - lng1
         a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlng/2)**2
         c = 2 * asin(sqrt(a))
         r = 6371
-        return c * r
-
-
+        return round(c * r, 2)
+    
 class TaskApplicationCreateView(generics.CreateAPIView):
     serializer_class = TaskApplicationCreateSerializer
     permission_classes = [permissions.IsAuthenticated]
