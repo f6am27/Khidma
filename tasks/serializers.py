@@ -339,7 +339,9 @@ class AvailableTaskSerializer(serializers.ModelSerializer):
             'budget', 'location', 'preferred_time', 'is_urgent',
             'requires_materials', 'createdAt', 'applicantsCount',
             'client_name', 'client_rating', 'distance_from_worker',
-            'has_applied', 'application_status'
+            'has_applied', 'application_status',
+            'latitude', 'longitude'  # ✅ أضف هذين السطرين
+
         ]
 
     def get_client_name(self, obj):

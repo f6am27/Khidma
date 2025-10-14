@@ -10,6 +10,9 @@ from django.db.models import Q, Avg, Min, Max, Sum, Count
 from math import radians, cos, sin, asin, sqrt
 from django.utils import timezone
 from datetime import timedelta
+from rest_framework import status, permissions
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
 
 from .models import WorkerService, WorkerSettings
 from .serializers import (
@@ -369,31 +372,50 @@ def worker_stats(request):
 # ==================== APIs الموقع الجديدة ====================
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([permissions.IsAuthenticated])
 def toggle_location_sharing(request):
-    if request.user.role != 'worker':
-        raise PermissionDenied("هذه الخدمة متاحة للعمال فقط")
+    """
+    تفعيل/إلغاء مشاركة الموقع
+    POST /api/users/toggle-location-sharing/
+    """
+    if not request.user.is_worker:
+        return Response({
+            "code": "not_worker",
+            "detail": "هذا العضو ليس عاملاً"
+        }, status=status.HTTP_403_FORBIDDEN)
     
-    if not hasattr(request.user, 'worker_profile'):
-        raise ValidationError("ملف العامل غير مكتمل")
+    try:
+        worker_profile = request.user.worker_profile
+    except WorkerProfile.DoesNotExist:
+        return Response({
+            "code": "profile_not_found",
+            "detail": "ملف العامل غير موجود"
+        }, status=status.HTTP_404_NOT_FOUND)
     
-    serializer = LocationToggleSerializer(data=request.data)
+    serializer = LocationSharingToggleSerializer(data=request.data)
     if not serializer.is_valid():
-        return Response({'error': 'بيانات غير صحيحة', 'details': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            "code": "validation_error",
+            "detail": serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
     
-    enabled = serializer.validated_data['enabled']
-    worker_profile = request.user.worker_profile
-    previous_status = worker_profile.location_sharing_enabled
-    new_status = worker_profile.toggle_location_sharing(enabled)
+    # تغيير حالة المشاركة
+    new_status = worker_profile.toggle_location_sharing(
+        enabled=serializer.validated_data['enabled']
+    )
+    
+    # ✅ جديد: تحديث is_online تلقائياً
+    worker_profile.is_online = new_status
+    worker_profile.save(update_fields=['is_online'])
     
     return Response({
-        'success': True,
-        'message': f'تم {"تفعيل" if new_status else "إيقاف"} مشاركة الموقع بنجاح',
-        'data': {
-            'location_sharing_enabled': new_status,
-            'previous_status': previous_status,
-            'location_status': worker_profile.location_status,
-            'updated_at': worker_profile.location_sharing_updated_at
+        "success": True,
+        "message": f"تم {'تفعيل' if new_status else 'إلغاء'} مشاركة الموقع",
+        "data": {
+            "location_sharing_enabled": new_status,
+            "location_status": worker_profile.location_status,
+            "is_online": worker_profile.is_online,  # ✅ جديد
+            "updated_at": worker_profile.location_sharing_updated_at.isoformat() if worker_profile.location_sharing_updated_at else None
         }
     }, status=status.HTTP_200_OK)
 
