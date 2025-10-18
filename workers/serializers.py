@@ -209,6 +209,91 @@ class WorkerProfileListSerializer(serializers.ModelSerializer):
             return f"{real_distance} km"
         import random
         return f"{random.uniform(0.5, 5.0):.1f} km"
+    
+    def get_name(self, obj):
+        """Get worker full name"""
+        if obj.first_name and obj.last_name:
+            return f"{obj.first_name} {obj.last_name}"
+        return obj.phone or "Worker"
+
+    def get_service(self, obj):
+        """Get worker service"""
+        if hasattr(obj, 'worker_services') and obj.worker_services.exists():
+            return obj.worker_services.first().category.name
+        return "Service"
+
+    def get_category(self, obj):
+        """Get worker category"""
+        if hasattr(obj, 'worker_services') and obj.worker_services.exists():
+            return obj.worker_services.first().category.name
+        return "Catégorie"
+
+    def get_area(self, obj):
+        """Get worker area"""
+        if hasattr(obj, 'worker_profile'):
+            return obj.worker_profile.service_area or "Zone"
+        return "Zone"
+
+    def get_phone(self, obj):
+        """Get worker phone"""
+        return obj.phone or ""
+
+    def get_image(self, obj):
+        """Get worker profile image"""
+        if hasattr(obj, 'worker_profile') and obj.worker_profile.profile_image:
+            return obj.worker_profile.profile_image.url
+        return None
+
+    def get_rating(self, obj):
+        """Get worker rating"""
+        if hasattr(obj, 'worker_profile'):
+            return float(obj.worker_profile.average_rating) or 0.0
+        return 0.0
+
+    def get_reviewCount(self, obj):
+        """Get worker review count"""
+        if hasattr(obj, 'worker_profile'):
+            return obj.worker_profile.total_reviews
+        return 0
+
+    def get_completedJobs(self, obj):
+        """Get worker completed jobs"""
+        if hasattr(obj, 'worker_profile'):
+            return obj.worker_profile.total_jobs_completed
+        return 0
+
+    def get_isOnline(self, obj):
+        """Get worker online status"""
+        if hasattr(obj, 'worker_profile'):
+            return obj.worker_profile.is_online
+        return False
+
+    def get_time(self, obj):
+        """Get estimated time"""
+        return "15 Min"
+
+    def get_price(self, obj):
+        """Get price range"""
+        if hasattr(obj, 'worker_services') and obj.worker_services.exists():
+            price = obj.worker_services.first().base_price
+            return f"{price}-{price * 2} MRU"
+        return "Price not available"
+
+    def get_minPrice(self, obj):
+        """Get minimum price"""
+        if hasattr(obj, 'worker_services') and obj.worker_services.exists():
+            return float(obj.worker_services.first().base_price) or 0.0
+        return 0.0
+
+    def get_isFavorite(self, obj):
+        """Get favorite status"""
+        return False
+    
+    def get_services(self, obj):
+        """Get worker services list"""
+        if hasattr(obj, 'worker_services') and obj.worker_services.exists():
+            return [service.category.name for service in obj.worker_services.filter(is_active=True)]
+        return []
 
 
 # ============================
@@ -296,6 +381,7 @@ class WorkerProfileSerializer(serializers.ModelSerializer):
         if hasattr(obj, 'worker_profile'):
             return obj.worker_profile.location_accuracy
         return None
+    
 
 
 class WorkerProfileDetailSerializer(serializers.ModelSerializer):

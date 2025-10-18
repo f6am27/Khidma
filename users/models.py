@@ -113,6 +113,13 @@ class User(AbstractUser):
         if self.role == 'admin':
             return self.email or "No Email"
         return self.phone or "No Phone"
+    
+    @property
+    def service_area(self):
+        """للتوافق مع serializers"""
+        if hasattr(self, 'worker_profile'):
+            return self.worker_profile.service_area
+        return None
 
 
 class AdminProfile(models.Model):

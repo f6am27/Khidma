@@ -20,11 +20,11 @@ class UserBasicSerializer(serializers.ModelSerializer):
 class TaskApplicationSerializer(serializers.ModelSerializer):
     worker_id = serializers.IntegerField(source='worker.id', read_only=True)
     name = serializers.SerializerMethodField()
-    rating = serializers.DecimalField(source='worker.average_rating', max_digits=3, decimal_places=1, read_only=True)
-    reviewCount = serializers.IntegerField(source='worker.total_reviews', read_only=True)
+    rating = serializers.SerializerMethodField()
+    reviewCount = serializers.SerializerMethodField()
     location = serializers.SerializerMethodField()
-    completedJobs = serializers.IntegerField(source='worker.total_jobs_completed', read_only=True)
-    isOnline = serializers.BooleanField(source='worker.is_online', read_only=True)
+    completedJobs = serializers.SerializerMethodField()
+    isOnline = serializers.SerializerMethodField()
     profileImage = serializers.CharField(source='worker.profile_image', read_only=True)
     id = serializers.CharField(source='worker.id', read_only=True)
     applicationMessage = serializers.CharField(source='application_message', read_only=True)
@@ -43,8 +43,36 @@ class TaskApplicationSerializer(serializers.ModelSerializer):
             return f"{user.first_name} {user.last_name}"
         return user.username
 
+    def get_rating(self, obj):
+        worker = obj.worker
+        if hasattr(worker, 'worker_profile') and worker.worker_profile:
+            return float(worker.worker_profile.average_rating) if worker.worker_profile.average_rating else 0.0
+        return 0.0
+    
+    def get_reviewCount(self, obj):
+        worker = obj.worker
+        if hasattr(worker, 'worker_profile') and worker.worker_profile:
+            return worker.worker_profile.total_reviews or 0
+        return 0
+    
+    def get_completedJobs(self, obj):
+        worker = obj.worker
+        if hasattr(worker, 'worker_profile') and worker.worker_profile:
+            return worker.worker_profile.total_jobs_completed or 0
+        return 0
+    
+    def get_isOnline(self, obj):
+        worker = obj.worker
+        if hasattr(worker, 'worker_profile') and worker.worker_profile:
+            return worker.worker_profile.is_online
+        return False
+
     def get_location(self, obj):
-        area = obj.worker.service_area.split(',')[0].strip()
+        worker = obj.worker
+        if hasattr(worker, 'worker_profile') and worker.worker_profile:
+            area = worker.worker_profile.service_area.split(',')[0].strip() if worker.worker_profile.service_area else "Unknown"
+        else:
+            area = "Unknown"
         import random
         distance = random.uniform(0.5, 5.0)
         return f"{area}, {distance:.1f}km"
@@ -59,31 +87,39 @@ class ServiceRequestListSerializer(serializers.ModelSerializer):
     applicantsCount = serializers.IntegerField(source='applications_count', read_only=True)
     assignedProvider = serializers.SerializerMethodField()
     providerRating = serializers.SerializerMethodField()
-    isUrgent = serializers.BooleanField(source='is_urgent', read_only=True)  # ← أضف
-    timeDescription = serializers.CharField(source='time_description', read_only=True, allow_null=True, required=False)  # ← أضف
+    isUrgent = serializers.BooleanField(source='is_urgent', read_only=True)  
+    timeDescription = serializers.CharField(source='time_description', read_only=True, allow_null=True, required=False)  
+    workStartedAt = serializers.DateTimeField(source='work_started_at', read_only=True, allow_null=True) 
+    finalPrice = serializers.DecimalField(source='final_price', max_digits=10, decimal_places=2, read_only=True, allow_null=True)
 
     class Meta:
         model = ServiceRequest
         fields = [
-            'id', 'title', 'description', 'serviceType', 'budget', 
+            'id', 'title', 'description', 'serviceType', 'budget', 'finalPrice',
             'location', 'preferredTime', 'status', 'createdAt',
             'applicantsCount', 'assignedProvider', 'providerRating',
-            'isUrgent', 'timeDescription'  # ← أضف هنا
+            'isUrgent', 'timeDescription' , 'workStartedAt' 
         ]
         extra_kwargs = {'preferredTime': {'source': 'preferred_time'}}
 
     def get_assignedProvider(self, obj):
         if obj.assigned_worker:
             user = obj.assigned_worker
-            if user.first_name and user.last_name:
+            if hasattr(user, 'first_name') and user.first_name and hasattr(user, 'last_name') and user.last_name:
                 return f"{user.first_name} {user.last_name}"
-            return user.username
+            if hasattr(user, 'username') and user.username:
+                return user.username
+            if hasattr(user, 'phone') and user.phone:
+                return user.phone
+            return "Worker"
         return None
 
     def get_providerRating(self, obj):
         if obj.assigned_worker:
-            return int(obj.assigned_worker.average_rating)
+            if hasattr(obj.assigned_worker, 'worker_profile') and obj.assigned_worker.worker_profile:
+                return int(obj.assigned_worker.worker_profile.average_rating) if obj.assigned_worker.worker_profile.average_rating else 0
         return None
+
 # --------------------------------------------------
 # تفاصيل طلب الخدمة
 # --------------------------------------------------
@@ -97,16 +133,16 @@ class ServiceRequestDetailSerializer(serializers.ModelSerializer):
     applicantsCount = serializers.IntegerField(source='applications_count', read_only=True)
     assigned_worker_info = serializers.SerializerMethodField()
     applications = TaskApplicationSerializer(many=True, read_only=True)
-    # الحقول الجديدة للموقع
     has_exact_coordinates = serializers.SerializerMethodField()
     location_type = serializers.SerializerMethodField()
     distance_from_worker = serializers.SerializerMethodField()
+    finalPrice = serializers.DecimalField(source='final_price', max_digits=10, decimal_places=2, read_only=True, allow_null=True)
 
     class Meta:
         model = ServiceRequest
         fields = [
             'id', 'title', 'description', 'serviceType', 'service_category',
-            'budget', 'final_price', 'location', 'preferred_time', 'preferredTime',
+            'budget', 'final_price', 'finalPrice', 'location', 'preferred_time', 'preferredTime',
             'latitude', 'longitude', 'status', 'status_display', 'is_urgent', 
             'requires_materials', 'client_name', 'client_phone', 'createdAt', 
             'applicantsCount', 'assigned_worker_info', 'applications',
@@ -122,14 +158,24 @@ class ServiceRequestDetailSerializer(serializers.ModelSerializer):
 
     def get_assigned_worker_info(self, obj):
         if obj.assigned_worker:
+            worker = obj.assigned_worker
+            if hasattr(worker, 'worker_profile') and worker.worker_profile:
+                rating = float(worker.worker_profile.average_rating) if worker.worker_profile.average_rating else 0.0
+                completed_jobs = worker.worker_profile.total_jobs_completed or 0
+                is_online = worker.worker_profile.is_online
+            else:
+                rating = 0.0
+                completed_jobs = 0
+                is_online = False
+            
             return {
-                'id': obj.assigned_worker.id,
-                'name': self.get_worker_name(obj.assigned_worker),
-                'phone': obj.assigned_worker.phone,
-                'rating': float(obj.assigned_worker.average_rating),
-                'completed_jobs': obj.assigned_worker.total_jobs_completed,
-                'is_online': obj.assigned_worker.is_online,
-                'profile_image': obj.assigned_worker.profile_image.url if obj.assigned_worker.profile_image else None,
+                'id': worker.id,
+                'name': self.get_worker_name(worker),
+                'phone': worker.phone,
+                'rating': rating,
+                'completed_jobs': completed_jobs,
+                'is_online': is_online,
+                'profile_image': worker.worker_profile.profile_image.url if (hasattr(worker, 'worker_profile') and worker.worker_profile and worker.worker_profile.profile_image) else None,
             }
         return None
 
@@ -220,7 +266,6 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
         area_id = validated_data.pop('area_id', None)
         service_type = validated_data.pop('serviceType', None)
         
-        # استخراج time_description من الـ request
         time_desc = request.data.get('timeDescription') or request.data.get('time_description')
 
         if service_type and 'service_category_id' not in validated_data:
@@ -239,7 +284,6 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
             **validated_data
         )
 
-        # حفظ الإحداثيات و time_description
         if latitude and longitude:
             service_request.latitude = latitude
             service_request.longitude = longitude
@@ -256,24 +300,20 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         request = self.context.get('request')
         
-        # معالجة service_category_id من serviceType
         if request and 'service_category_id' in request.data:
             category_id = request.data.get('service_category_id')
             if category_id:
                 instance.service_category_id = category_id
         
-        # تحديث time_description
         if request:
             time_desc = request.data.get('timeDescription') or request.data.get('time_description')
             if time_desc:
                 instance.time_description = time_desc
         
-        # إزالة الحقول التي لا نريد تحديثها
         validated_data.pop('location_method', None)
         validated_data.pop('area_id', None)
         validated_data.pop('serviceType', None)
         
-        # تحديث باقي الحقول
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         
@@ -340,8 +380,7 @@ class AvailableTaskSerializer(serializers.ModelSerializer):
             'requires_materials', 'createdAt', 'applicantsCount',
             'client_name', 'client_rating', 'distance_from_worker',
             'has_applied', 'application_status',
-            'latitude', 'longitude'  # ✅ أضف هذين السطرين
-
+            'latitude', 'longitude'
         ]
 
     def get_client_name(self, obj):
@@ -445,9 +484,6 @@ class TaskNotificationSerializer(serializers.ModelSerializer):
 
 
 class TaskMapDataSerializer(serializers.ModelSerializer):
-    """
-    Serializer مخصص لعرض المهام على الخريطة التفاعلية
-    """
     category = serializers.CharField(source='service_category.name', read_only=True)
     category_icon = serializers.CharField(source='service_category.icon', read_only=True)
     distance_km = serializers.SerializerMethodField()
@@ -463,7 +499,6 @@ class TaskMapDataSerializer(serializers.ModelSerializer):
         ]
     
     def get_distance_km(self, obj):
-        """حساب المسافة من موقع العامل الحالي"""
         request = self.context.get('request')
         if not request or request.user.role != 'worker':
             return None
@@ -480,15 +515,12 @@ class TaskMapDataSerializer(serializers.ModelSerializer):
         return None
     
     def get_client_initial(self, obj):
-        """الحرف الأول من اسم العميل للخصوصية"""
         client = obj.client
         if client.first_name:
             return client.first_name[0].upper()
         return client.phone[0] if client.phone else 'C'
     
     def get_urgency_level(self, obj):
-        """مستوى الاستعجال للخريطة"""
         if obj.is_urgent:
             return 'high'
-        # يمكن إضافة منطق لتحديد المستوى بناء على الوقت أو السعر
         return 'normal'

@@ -263,11 +263,21 @@ class TaskApplicationCreateView(generics.CreateAPIView):
         ).exists():
             raise ValidationError("You have already applied for this task")
         
-        if not request.user.worker_services.filter(
-            category=service_request.service_category
-        ).exists():
-            raise ValidationError("You don't offer this type of service")
-        
+        # ✅ معالجة آمنة تتعامل مع كل الحالات
+        worker_category = request.user.worker_profile.service_category
+        task_category = service_request.service_category
+
+        # التحقق: إذا كانا objects، قارن بـ id
+        # إذا كانا strings، قارن مباشرة
+        if hasattr(worker_category, 'id') and hasattr(task_category, 'id'):
+            # حالة: Foreign Key Objects
+            if worker_category.id != task_category.id:
+                raise ValidationError("You don't offer this type of service")
+        else:
+            # حالة: String values
+            if str(worker_category) != str(task_category):
+                raise ValidationError("You don't offer this type of service")
+                
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
@@ -388,6 +398,26 @@ def update_task_status(request, pk):
     if not new_status:
         raise ValidationError("Status is required")
     
+    if new_status == 'start_work':
+        if request.user.role != 'worker':
+            raise PermissionDenied("Only workers can start work")
+        if service_request.assigned_worker != request.user:
+            raise PermissionDenied("Only the assigned worker can start this work")
+        if service_request.status != 'active':
+            raise ValidationError("Task must be active to start work")
+        
+        service_request.work_started_at = timezone.now()
+        service_request.save()
+        
+        TaskNotification.objects.create(
+            recipient=service_request.client,
+            service_request=service_request,
+            notification_type='work_started',
+            title='Travail commencé',
+            message=f'Le prestataire a commencé le travail pour "{service_request.title}".'
+        )
+        return Response({'message': 'Work started successfully.'})
+    
     if new_status == 'work_completed':
         if request.user.role != 'worker':
             raise PermissionDenied("Only workers can mark work as completed")
@@ -412,20 +442,70 @@ def update_task_status(request, pk):
             raise PermissionDenied("Only the client can confirm task completion")
         if service_request.status != 'work_completed':
             raise ValidationError("Work must be marked as completed by worker first")
+        
+        # ✅ الحل الصحيح:
+        # 1. التحقق من أن final_price موجود ومُرسل
+        final_price = request.data.get('final_price')
+        
+        print(f'════════ PAYMENT DEBUG ════════')
+        print(f'Task ID: {service_request.id}')
+        print(f'Received final_price: {final_price}')
+        print(f'Type: {type(final_price)}')
+        print(f'Budget: {service_request.budget}')
+        print(f'═══════════════════════════════')
+        
+        # 2. التحقق من أن القيمة ليست null أو فارغة
+        if final_price is None or final_price == '':
+            raise ValidationError({
+                'final_price': 'المبلغ النهائي مطلوب'
+            })
+        
+        # 3. تحويل آمن إلى float
+        try:
+            final_price_float = float(final_price)
+            
+            # 4. التحقق من أن القيمة موجبة
+            if final_price_float <= 0:
+                raise ValidationError({
+                    'final_price': 'المبلغ يجب أن يكون أكبر من صفر'
+                })
+            
+            # ✅ 5. حفظ القيمة بشكل صحيح
+            service_request.final_price = final_price_float
+            
+        except (ValueError, TypeError) as e:
+            raise ValidationError({
+                'final_price': f'صيغة المبلغ غير صحيحة: {str(e)}'
+            })
+        
+        # 6. تحديث الحالة
         service_request.status = 'completed'
         service_request.completed_at = timezone.now()
         service_request.save()
+        
+        print(f'✅ Task saved with final_price: {service_request.final_price}')
+        
+        # 7. تحديث إحصائيات العامل
         worker = service_request.assigned_worker
-        worker.total_jobs_completed += 1
-        worker.save()
+        if hasattr(worker, 'worker_profile'):
+            worker.worker_profile.total_jobs_completed += 1
+            worker.worker_profile.save()
+        
+        # 8. إرسال إشعار
         TaskNotification.objects.create(
             recipient=worker,
             service_request=service_request,
             notification_type='task_completed',
             title='Tâche confirmée terminée',
-            message=f'Le client a confirmé la completion de "{service_request.title}". Félicitations!'
+            message=f'Le client a confirmé la completion de "{service_request.title}". Montant: {service_request.final_price} MRU'
         )
-        return Response({'message': 'Task completed successfully. Payment will be processed.'})
+        
+        # ✅ 9. إرجاع النتيجة الصحيحة
+        return Response({
+            'message': 'Task completed successfully.',
+            'final_price': float(service_request.final_price),
+            'task_id': service_request.id
+        })
     
     elif new_status == 'cancelled':
         if service_request.client != request.user:
@@ -447,7 +527,6 @@ def update_task_status(request, pk):
     
     else:
         raise ValidationError("Invalid status")
-
 
 class TaskReviewCreateView(generics.CreateAPIView):
     serializer_class = TaskReviewSerializer

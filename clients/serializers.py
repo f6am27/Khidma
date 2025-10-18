@@ -79,14 +79,35 @@ class ClientProfileSerializer(serializers.ModelSerializer):
         return None
     
     def get_total_tasks_published(self, obj):
-        return obj.client_profile.total_tasks_published if hasattr(obj, 'client_profile') else 0
-    
+        """حساب عدد المهام المنشورة من قاعدة البيانات"""
+        from tasks.models import ServiceRequest
+        count = ServiceRequest.objects.filter(client=obj).count()
+        print(f'📊 Tasks published for client {obj.id}: {count}')
+        return count
+
     def get_total_tasks_completed(self, obj):
-        return obj.client_profile.total_tasks_completed if hasattr(obj, 'client_profile') else 0
-    
+        """حساب عدد المهام المكتملة من قاعدة البيانات"""
+        from tasks.models import ServiceRequest
+        count = ServiceRequest.objects.filter(
+            client=obj,
+            status='completed'
+        ).count()
+        print(f'📊 Tasks completed for client {obj.id}: {count}')
+        return count
+
     def get_total_amount_spent(self, obj):
-        return str(obj.client_profile.total_amount_spent) if hasattr(obj, 'client_profile') else "0.00"
-    
+        """حساب المبلغ الكلي المنفق من قاعدة البيانات"""
+        from tasks.models import ServiceRequest
+        from django.db.models import Sum
+        
+        total = ServiceRequest.objects.filter(
+            client=obj,
+            status='completed'
+        ).aggregate(total=Sum('final_price'))['total'] or 0
+        
+        print(f'💰 Total amount spent by client {obj.id}: {total}')
+        return str(total) if total else "0.00"
+
     def get_success_rate(self, obj):
         if hasattr(obj, 'client_profile'):
             profile = obj.client_profile
@@ -229,9 +250,23 @@ class FavoriteWorkerSerializer(serializers.ModelSerializer):
     
     def get_services(self, obj):
         """Get worker services"""
-        if hasattr(obj.worker, 'worker_services'):
-            return [service.category.name for service in obj.worker.worker_services.filter(is_active=True)]
-        return []
+        worker = obj.worker
+        services_list = []
+        
+        # من WorkerService
+        if hasattr(worker, 'worker_services'):
+            services = worker.worker_services.filter(is_active=True)
+            if services.exists():
+                services_list = [service.category.name for service in services]
+        
+        # من WorkerProfile إذا كانت فارغة
+        if not services_list and hasattr(worker, 'worker_profile'):
+            service_cat = worker.worker_profile.service_category
+            if service_cat:  # هو string مباشرة
+                services_list = [service_cat]  # أضفه كما هو
+        
+        return services_list
+    
     
     def get_startingPrice(self, obj):
         """Get worker's minimum price"""
