@@ -127,11 +127,11 @@ class LocationToggleSerializer(serializers.Serializer):
 class WorkerProfileListSerializer(serializers.ModelSerializer):
     """
     Flutter-compatible serializer for worker list/search
-    مع معلومات الموقع
+    مع معلومات الموقع والخدمة
     """
     name = serializers.SerializerMethodField()
     service = serializers.SerializerMethodField() 
-    category = serializers.SerializerMethodField()
+    category = serializers.SerializerMethodField()  # ✅ نوع الخدمة من WorkerProfile
     rating = serializers.SerializerMethodField()
     minPrice = serializers.SerializerMethodField()
     area = serializers.SerializerMethodField()
@@ -211,91 +211,105 @@ class WorkerProfileListSerializer(serializers.ModelSerializer):
         return f"{random.uniform(0.5, 5.0):.1f} km"
     
     def get_name(self, obj):
-        """Get worker full name"""
+        """احصل على الاسم الكامل للعامل"""
         if obj.first_name and obj.last_name:
             return f"{obj.first_name} {obj.last_name}"
         return obj.phone or "Worker"
 
     def get_service(self, obj):
-        """Get worker service"""
-        if hasattr(obj, 'worker_services') and obj.worker_services.exists():
-            return obj.worker_services.first().category.name
+        """احصل على نوع الخدمة"""
+        if hasattr(obj, 'worker_profile'):
+            return obj.worker_profile.service_category or "Service"
         return "Service"
 
     def get_category(self, obj):
-        """Get worker category"""
-        if hasattr(obj, 'worker_services') and obj.worker_services.exists():
-            return obj.worker_services.first().category.name
-        return "Catégorie"
+        """✅ احصل على فئة الخدمة من WorkerProfile"""
+        if hasattr(obj, 'worker_profile'):
+            return obj.worker_profile.service_category or "Service"
+        return "Service"
 
     def get_area(self, obj):
-        """Get worker area"""
+        """احصل على منطقة الخدمة"""
         if hasattr(obj, 'worker_profile'):
             return obj.worker_profile.service_area or "Zone"
         return "Zone"
 
     def get_phone(self, obj):
-        """Get worker phone"""
+        """احصل على الهاتف"""
         return obj.phone or ""
 
     def get_image(self, obj):
-        """Get worker profile image"""
+        """✅ احصل على صورة البروفايل مع URL الكامل"""
+        request = self.context.get('request')
         if hasattr(obj, 'worker_profile') and obj.worker_profile.profile_image:
-            return obj.worker_profile.profile_image.url
+            image_url = obj.worker_profile.profile_image.url
+            # إذا كان لدينا request، اجعل URL مطلق
+            if request:
+                return request.build_absolute_uri(image_url)
+            return image_url
         return None
 
     def get_rating(self, obj):
-        """Get worker rating"""
+        """احصل على التقييم"""
         if hasattr(obj, 'worker_profile'):
             return float(obj.worker_profile.average_rating) or 0.0
         return 0.0
 
     def get_reviewCount(self, obj):
-        """Get worker review count"""
+        """احصل على عدد التقييمات"""
         if hasattr(obj, 'worker_profile'):
             return obj.worker_profile.total_reviews
         return 0
 
     def get_completedJobs(self, obj):
-        """Get worker completed jobs"""
+        """احصل على عدد المهام المنجزة"""
         if hasattr(obj, 'worker_profile'):
             return obj.worker_profile.total_jobs_completed
         return 0
 
     def get_isOnline(self, obj):
-        """Get worker online status"""
+        """احصل على حالة الاتصال"""
         if hasattr(obj, 'worker_profile'):
             return obj.worker_profile.is_online
         return False
 
     def get_time(self, obj):
-        """Get estimated time"""
+        """احصل على الوقت المتوقع"""
         return "15 Min"
 
     def get_price(self, obj):
-        """Get price range"""
-        if hasattr(obj, 'worker_services') and obj.worker_services.exists():
-            price = obj.worker_services.first().base_price
-            return f"{price}-{price * 2} MRU"
-        return "Price not available"
+        """✅ لا تعرض السعر - سيتم حذفه"""
+        return None
 
     def get_minPrice(self, obj):
-        """Get minimum price"""
+        """احصل على أقل سعر"""
         if hasattr(obj, 'worker_services') and obj.worker_services.exists():
             return float(obj.worker_services.first().base_price) or 0.0
         return 0.0
 
+
+
     def get_isFavorite(self, obj):
-        """Get favorite status"""
+        """تحقق من حالة المفضلة"""
+        request = self.context.get('request')
+        
+        # التحقق من وجود user مسجل الدخول
+        if request and request.user and request.user.is_authenticated and request.user.role == 'client':
+            from clients.models import FavoriteWorker
+            is_favorite = FavoriteWorker.objects.filter(
+                client=request.user,
+                worker=obj
+            ).exists()
+            return is_favorite
+        
+        # في حالة عدم وجود user أو لم يكن مسجل دخول
         return False
-    
+
     def get_services(self, obj):
-        """Get worker services list"""
+        """احصل على قائمة الخدمات"""
         if hasattr(obj, 'worker_services') and obj.worker_services.exists():
             return [service.category.name for service in obj.worker_services.filter(is_active=True)]
         return []
-
-
 # ============================
 # تحديث WorkerProfileSerializer
 # ============================

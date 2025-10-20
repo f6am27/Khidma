@@ -13,6 +13,7 @@ from datetime import timedelta
 from rest_framework import status, permissions
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+from rest_framework.settings import api_settings
 
 from .models import WorkerService, WorkerSettings
 from .serializers import (
@@ -55,36 +56,75 @@ class WorkerListView(generics.ListAPIView):
     ordering_fields = ['worker_profile__average_rating', 'worker_profile__total_jobs_completed', 'worker_profile__last_seen']
     ordering = ['-worker_profile__is_online', '-worker_profile__average_rating']
 
+class WorkerListView(generics.ListAPIView):
+    queryset = User.objects.filter(
+        role='worker',
+        is_verified=True,
+        onboarding_completed=True,
+        worker_profile__is_available=True
+    ).select_related('worker_profile').prefetch_related('worker_services__category')
+    
+    serializer_class = WorkerProfileListSerializer
+    permission_classes = [AllowAny]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    
+    search_fields = [
+        'first_name', 'last_name', 'phone',
+        'worker_profile__bio', 'worker_profile__service_area', 
+        'worker_profile__service_category'  # ✅ تغيير: البحث في service_category
+    ]
+    
+    filterset_fields = ['worker_profile__is_verified', 'worker_profile__is_online']
+    
+    ordering_fields = ['worker_profile__average_rating', 'worker_profile__total_jobs_completed', 'worker_profile__last_seen']
+    ordering = ['-worker_profile__is_online', '-worker_profile__average_rating']
+
     def get_queryset(self):
         queryset = super().get_queryset()
         
+        # ✅ التصحيح 1: الفلترة حسب الفئة من WorkerProfile.service_category
         category = self.request.query_params.get('category', None)
-        if category and category not in ['Toutes Catégories', 'All Categories']:
-            if category.isdigit():
-                queryset = queryset.filter(worker_services__category__id=category)
-            else:
-                queryset = queryset.filter(
-                    Q(worker_services__category__name__icontains=category) |
-                    Q(worker_services__category__name_ar__icontains=category)
-                )
-        
-        area = self.request.query_params.get('area', None)
-        if area and area not in ['Toutes Zones', 'All Areas']:
+        if category and category not in ['Toutes Catégories', 'All Categories', '']:
+            category = category.strip()
             queryset = queryset.filter(
-                Q(worker_profile__service_area__icontains=area)
+                Q(worker_profile__service_category__iexact=category) |  # مطابقة دقيقة أولاً
+                Q(worker_profile__service_category__icontains=category)  # أو بحث بسيط
             )
         
+        # ✅ التصحيح 2: فلترة المنطقة
+        area = self.request.query_params.get('area', None)
+        if area and area not in ['Toutes Zones', 'All Areas', '']:
+            area = area.strip()
+            queryset = queryset.filter(
+                worker_profile__service_area__icontains=area
+            )
+        
+        # ✅ التصحيح 3: فلترة السعر (من base_price في WorkerProfile)
         min_price = self.request.query_params.get('min_price', None)
         max_price = self.request.query_params.get('max_price', None)
         if min_price:
-            queryset = queryset.filter(worker_services__base_price__gte=min_price)
+            try:
+                min_price = float(min_price)
+                queryset = queryset.filter(worker_profile__base_price__gte=min_price)
+            except (ValueError, TypeError):
+                pass
         if max_price:
-            queryset = queryset.filter(worker_services__base_price__lte=max_price)
+            try:
+                max_price = float(max_price)
+                queryset = queryset.filter(worker_profile__base_price__lte=max_price)
+            except (ValueError, TypeError):
+                pass
         
+        # ✅ التصحيح 4: فلترة التقييم
         min_rating = self.request.query_params.get('min_rating', None)
         if min_rating:
-            queryset = queryset.filter(worker_profile__average_rating__gte=min_rating)
+            try:
+                min_rating = float(min_rating)
+                queryset = queryset.filter(worker_profile__average_rating__gte=min_rating)
+            except (ValueError, TypeError):
+                pass
         
+        # ✅ التصحيح 5: فلترة الحالة اون لاين
         online_only = self.request.query_params.get('online_only', None)
         if online_only and online_only.lower() == 'true':
             queryset = queryset.filter(worker_profile__is_online=True)
@@ -97,14 +137,15 @@ class WorkerListView(generics.ListAPIView):
         sort_by = request.query_params.get('sort_by', None)
         
         if sort_by == 'price_asc':
-            queryset = queryset.order_by('worker_services__base_price')
+            queryset = queryset.order_by('worker_profile__base_price')
         elif sort_by == 'price_desc':
-            queryset = queryset.order_by('-worker_services__base_price')
+            queryset = queryset.order_by('-worker_profile__base_price')
         elif sort_by == 'rating':
             queryset = queryset.order_by('-worker_profile__average_rating')
         elif sort_by == 'experience':
             queryset = queryset.order_by('-worker_profile__total_jobs_completed')
         elif sort_by == 'nearest':
+            # ✅ التصحيح: فلترة العمال الذين لديهم موقع حالي مشارك
             client_lat = request.query_params.get('lat')
             client_lng = request.query_params.get('lng')
             
@@ -113,27 +154,57 @@ class WorkerListView(generics.ListAPIView):
                     client_lat = float(client_lat)
                     client_lng = float(client_lng)
                     
+                    # ✅ فلترة العمال الذين لديهم current_latitude/longitude (الموقع الحالي)
+                    queryset = queryset.filter(
+                        worker_profile__current_latitude__isnull=False,
+                        worker_profile__current_longitude__isnull=False,
+                        worker_profile__location_sharing_enabled=True,
+                        worker_profile__location_status='active'
+                    )
+                    
+                    # إذا لم يكن هناك عمال بموقع مشارك، أرجع كل العمال بدون ترتيب مسافة
+                    if not queryset.exists():
+                        print("⚠️ No workers with active location sharing")
+                        return Response({
+                            'count': 0,
+                            'results': [],
+                            'message': 'No workers with active location sharing in your area'
+                        })
+                    
+                    # حساب المسافة لكل عامل
                     workers_with_distance = []
                     for worker in queryset:
-                        if (hasattr(worker, 'worker_profile') and 
-                            worker.worker_profile.latitude and worker.worker_profile.longitude):
+                        try:
                             distance = self.calculate_distance(
                                 client_lat, client_lng,
-                                float(worker.worker_profile.latitude), 
-                                float(worker.worker_profile.longitude)
+                                float(worker.worker_profile.current_latitude),
+                                float(worker.worker_profile.current_longitude)
                             )
                             workers_with_distance.append((worker, distance))
-                        else:
+                        except (ValueError, TypeError) as e:
+                            print(f"⚠️ Error calculating distance for worker {worker.id}: {e}")
                             workers_with_distance.append((worker, 999))
                     
+                    # ترتيب حسب المسافة
                     workers_with_distance.sort(key=lambda x: x[1])
                     queryset = [worker for worker, distance in workers_with_distance]
                     
-                except (ValueError, TypeError):
-                    pass
+                except (ValueError, TypeError) as e:
+                    print(f"❌ Error: Invalid lat/lng parameters: {e}")
+                    return Response({
+                        'error': 'Invalid coordinates',
+                        'message': 'lat and lng must be valid numbers'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                print("⚠️ No coordinates provided for nearest filter")
+                return Response({
+                    'error': 'Missing coordinates',
+                    'message': 'lat and lng parameters are required for nearest sorting'
+                }, status=status.HTTP_400_BAD_REQUEST)
         
+        # ✅ معالجة النتائج المرتبة حسب المسافة
         if sort_by == 'nearest' and isinstance(queryset, list):
-            page_size = self.get_paginator().page_size
+            page_size = api_settings.PAGE_SIZE or 10    
             page_number = request.query_params.get('page', 1)
             try:
                 page_number = int(page_number)
@@ -150,6 +221,7 @@ class WorkerListView(generics.ListAPIView):
                 'results': serializer.data
             })
         
+        # معالجة QuerySet العادية
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
@@ -162,14 +234,18 @@ class WorkerListView(generics.ListAPIView):
         })
 
     def calculate_distance(self, lat1, lng1, lat2, lng2):
-        lat1, lng1, lat2, lng2 = map(radians, [lat1, lng1, lat2, lng2])
-        dlat = lat2 - lat1
-        dlng = lng2 - lng1
-        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlng/2)**2
-        c = 2 * asin(sqrt(a))
-        r = 6371
-        return c * r
-
+        """حساب المسافة بين نقطتين باستخدام Haversine formula"""
+        try:
+            lat1, lng1, lat2, lng2 = map(radians, [lat1, lng1, lat2, lng2])
+            dlat = lat2 - lat1
+            dlng = lng2 - lng1
+            a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlng/2)**2
+            c = 2 * asin(sqrt(a))
+            r = 6371  # نصف قطر الأرض بالكيلومتر
+            return c * r
+        except Exception as e:
+            print(f"❌ Error in distance calculation: {e}")
+            return 999
 
 class WorkerDetailView(generics.RetrieveAPIView):
     queryset = User.objects.filter(
