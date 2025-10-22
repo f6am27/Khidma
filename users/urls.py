@@ -6,7 +6,8 @@ from .views import (
     ResendRegisterOTPView, ResendPasswordResetOTPView,
     CompleteOnboardingView, UserProfileView,
     WorkerProfileView, ClientProfileView, WorkerOnboardingView,
-    update_worker_location, toggle_location_sharing, get_worker_location_info
+    update_worker_location, toggle_location_sharing, get_worker_location_info,ChangePasswordView,LogoutView
+
 )
 from .upload_views import (
     upload_profile_image,
@@ -22,6 +23,7 @@ app_name = 'users'
 urlpatterns = [
     # ====== مصادقة المستخدم الأساسية ======
     path('register/', RegisterView.as_view(), name='register'),
+    path('logout/', LogoutView.as_view(), name='logout'),
     path('verify/', VerifyView.as_view(), name='verify'),
     path('login/', LoginView.as_view(), name='login'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
@@ -30,6 +32,7 @@ urlpatterns = [
     # ====== استعادة كلمة المرور ======
     path('password/reset/', PasswordResetStartView.as_view(), name='password_reset'),
     path('password/confirm/', PasswordResetConfirmView.as_view(), name='password_confirm'),
+    path('change-password/', ChangePasswordView.as_view(), name='change_password'),
 
     # ====== إعادة إرسال OTP ======
     path('resend/', ResendRegisterOTPView.as_view(), name='resend_register'),

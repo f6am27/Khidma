@@ -413,8 +413,8 @@ def update_task_status(request, pk):
             recipient=service_request.client,
             service_request=service_request,
             notification_type='work_started',
-            title='Travail commencé',
-            message=f'Le prestataire a commencé le travail pour "{service_request.title}".'
+            title='Work started',
+            message=f'Worker has started work on "{service_request.title}".'
         )
         return Response({'message': 'Work started successfully.'})
     
@@ -425,15 +425,17 @@ def update_task_status(request, pk):
             raise PermissionDenied("Only the assigned worker can mark this work as completed")
         if service_request.status != 'active':
             raise ValidationError("Task must be active to mark as work completed")
+        
         service_request.status = 'work_completed'
         service_request.work_completed_at = timezone.now()
         service_request.save()
+        
         TaskNotification.objects.create(
             recipient=service_request.client,
             service_request=service_request,
             notification_type='work_completed',
-            title='Travail terminé',
-            message=f'Le prestataire a terminé le travail pour "{service_request.title}". Veuillez vérifier et confirmer.'
+            title='Work completed',
+            message=f'Worker has completed work on "{service_request.title}". Please verify and confirm.'
         )
         return Response({'message': 'Work marked as completed. Waiting for client confirmation.'})
     
@@ -443,8 +445,7 @@ def update_task_status(request, pk):
         if service_request.status != 'work_completed':
             raise ValidationError("Work must be marked as completed by worker first")
         
-        # ✅ الحل الصحيح:
-        # 1. التحقق من أن final_price موجود ومُرسل
+        # Get final_price from request
         final_price = request.data.get('final_price')
         
         print(f'════════ PAYMENT DEBUG ════════')
@@ -454,56 +455,68 @@ def update_task_status(request, pk):
         print(f'Budget: {service_request.budget}')
         print(f'═══════════════════════════════')
         
-        # 2. التحقق من أن القيمة ليست null أو فارغة
+        # Validate final_price
         if final_price is None or final_price == '':
             raise ValidationError({
-                'final_price': 'المبلغ النهائي مطلوب'
+                'final_price': 'Final price is required'
             })
         
-        # 3. تحويل آمن إلى float
+        # Convert to float safely
         try:
             final_price_float = float(final_price)
             
-            # 4. التحقق من أن القيمة موجبة
             if final_price_float <= 0:
                 raise ValidationError({
-                    'final_price': 'المبلغ يجب أن يكون أكبر من صفر'
+                    'final_price': 'Amount must be greater than zero'
                 })
             
-            # ✅ 5. حفظ القيمة بشكل صحيح
             service_request.final_price = final_price_float
             
         except (ValueError, TypeError) as e:
             raise ValidationError({
-                'final_price': f'صيغة المبلغ غير صحيحة: {str(e)}'
+                'final_price': f'Invalid amount format: {str(e)}'
             })
         
-        # 6. تحديث الحالة
+        # Update task status
         service_request.status = 'completed'
         service_request.completed_at = timezone.now()
         service_request.save()
         
         print(f'✅ Task saved with final_price: {service_request.final_price}')
         
-        # 7. تحديث إحصائيات العامل
+        # ✅ CREATE PAYMENT AUTOMATICALLY
+        from payments.models import Payment
+        
+        payment = Payment.objects.create(
+            task=service_request,
+            payer=service_request.client,
+            receiver=service_request.assigned_worker,
+            amount=final_price_float,
+            payment_method='cash',
+            status='completed'
+        )
+        
+        print(f'✅ Payment created: {payment.id} - Amount: {payment.amount} MRU')
+        
+        # Update worker stats
         worker = service_request.assigned_worker
         if hasattr(worker, 'worker_profile'):
             worker.worker_profile.total_jobs_completed += 1
             worker.worker_profile.save()
         
-        # 8. إرسال إشعار
+        # Send notification to worker
         TaskNotification.objects.create(
             recipient=worker,
             service_request=service_request,
             notification_type='task_completed',
-            title='Tâche confirmée terminée',
-            message=f'Le client a confirmé la completion de "{service_request.title}". Montant: {service_request.final_price} MRU'
+            title='Task completed and paid',
+            message=f'Task "{service_request.title}" completed and paid. Amount: {service_request.final_price} MRU'
         )
         
-        # ✅ 9. إرجاع النتيجة الصحيحة
         return Response({
-            'message': 'Task completed successfully.',
+            'message': 'Task completed and payment recorded successfully',
             'final_price': float(service_request.final_price),
+            'payment_id': payment.id,
             'task_id': service_request.id
         })
     
@@ -512,21 +525,25 @@ def update_task_status(request, pk):
             raise PermissionDenied("You can only cancel your own tasks")
         if service_request.status not in ['published', 'active']:
             raise ValidationError("Only published or active tasks can be cancelled")
+        
         service_request.status = 'cancelled'
         service_request.cancelled_at = timezone.now()
         service_request.save()
+        
         if service_request.assigned_worker:
             TaskNotification.objects.create(
                 recipient=service_request.assigned_worker,
                 service_request=service_request,
                 notification_type='task_cancelled',
-                title='Tâche annulée',
-                message=f'La tâche "{service_request.title}" a été annulée par le client.'
+                title='Task cancelled',
+                message=f'Task "{service_request.title}" has been cancelled by the client.'
             )
+        
         return Response({'message': 'Task cancelled successfully'})
     
     else:
         raise ValidationError("Invalid status")
+    
 
 class TaskReviewCreateView(generics.CreateAPIView):
     serializer_class = TaskReviewSerializer
@@ -744,3 +761,149 @@ def tasks_map_data(request):
         'statistics': stats,
         'tasks': serializer.data
     }, status=status.HTTP_200_OK)
+
+# tasks/views.py
+from rest_framework import generics, permissions, filters
+from rest_framework.response import Response
+from django.db.models import Q, Avg, Count
+from django_filters.rest_framework import DjangoFilterBackend
+from .models import TaskReview, ServiceRequest
+from .serializers import TaskReviewSerializer
+
+
+class WorkerReceivedReviewsView(generics.ListAPIView):
+
+    serializer_class = TaskReviewSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    
+    # Search in review text and task title
+    search_fields = ['review_text', 'service_request__title']
+    
+    # Allow ordering by these fields
+    ordering_fields = ['created_at', 'rating']
+    ordering = ['-created_at']  # Default: newest first
+    
+    def get_queryset(self):
+        """Get reviews for authenticated worker only"""
+        user = self.request.user
+        
+        # Only workers can view received reviews
+        if user.role != 'worker':
+            return TaskReview.objects.none()
+        
+        # Get reviews where user is the assigned worker
+        queryset = TaskReview.objects.filter(
+            service_request__assigned_worker=user
+        ).select_related(
+            'service_request',
+            'service_request__client',
+            'service_request__assigned_worker',
+            'service_request__service_category'
+        ).order_by('-created_at')
+        
+        # Filter by rating if provided
+        rating = self.request.query_params.get('rating')
+        if rating:
+            try:
+                rating_int = int(rating)
+                if 1 <= rating_int <= 5:
+                    queryset = queryset.filter(rating=rating_int)
+            except ValueError:
+                pass
+        
+        return queryset
+    
+    def list(self, request, *args, **kwargs):
+        """Override to add statistics in response"""
+        queryset = self.get_queryset()
+        
+        # Pagination
+        limit = int(request.query_params.get('limit', 20))
+        offset = int(request.query_params.get('offset', 0))
+        
+        total_count = queryset.count()
+        
+        # Calculate statistics
+        stats = queryset.aggregate(
+            average_rating=Avg('rating'),
+            total_reviews=Count('id'),
+            five_stars=Count('id', filter=Q(rating=5)),
+            four_stars=Count('id', filter=Q(rating=4)),
+            three_stars=Count('id', filter=Q(rating=3)),
+            two_stars=Count('id', filter=Q(rating=2)),
+            one_star=Count('id', filter=Q(rating=1)),
+        )
+        
+        # Apply pagination
+        paginated_queryset = queryset[offset:offset + limit]
+        
+        # Serialize data
+        serializer = self.get_serializer(paginated_queryset, many=True)
+        
+        return Response({
+            'count': total_count,
+            'limit': limit,
+            'offset': offset,
+            'statistics': {
+                'average_rating': round(float(stats['average_rating'] or 0), 1),
+                'total_reviews': stats['total_reviews'],
+                'rating_breakdown': {
+                    '5': stats['five_stars'],
+                    '4': stats['four_stars'],
+                    '3': stats['three_stars'],
+                    '2': stats['two_stars'],
+                    '1': stats['one_star'],
+                }
+            },
+            'results': serializer.data
+        })
+
+
+class TaskReviewStatsView(generics.GenericAPIView):
+    """
+    Get review statistics for worker
+    GET /tasks/review-stats/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        user = request.user
+        
+        if user.role != 'worker':
+            return Response({
+                'error': 'Only workers can view review statistics'
+            }, status=403)
+        
+        reviews = TaskReview.objects.filter(
+            service_request__assigned_worker=user
+        )
+        
+        stats = reviews.aggregate(
+            average_rating=Avg('rating'),
+            total_reviews=Count('id'),
+            five_stars=Count('id', filter=Q(rating=5)),
+            four_stars=Count('id', filter=Q(rating=4)),
+            three_stars=Count('id', filter=Q(rating=3)),
+            two_stars=Count('id', filter=Q(rating=2)),
+            one_star=Count('id', filter=Q(rating=1)),
+        )
+        
+        return Response({
+            'average_rating': round(float(stats['average_rating'] or 0), 1),
+            'total_reviews': stats['total_reviews'],
+            'rating_breakdown': {
+                '5': stats['five_stars'],
+                '4': stats['four_stars'],
+                '3': stats['three_stars'],
+                '2': stats['two_stars'],
+                '1': stats['one_star'],
+            },
+            'rating_percentages': {
+                '5': round((stats['five_stars'] / stats['total_reviews'] * 100) if stats['total_reviews'] > 0 else 0, 1),
+                '4': round((stats['four_stars'] / stats['total_reviews'] * 100) if stats['total_reviews'] > 0 else 0, 1),
+                '3': round((stats['three_stars'] / stats['total_reviews'] * 100) if stats['total_reviews'] > 0 else 0, 1),
+                '2': round((stats['two_stars'] / stats['total_reviews'] * 100) if stats['total_reviews'] > 0 else 0, 1),
+                '1': round((stats['one_star'] / stats['total_reviews'] * 100) if stats['total_reviews'] > 0 else 0, 1),
+            }
+        })

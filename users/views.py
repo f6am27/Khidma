@@ -10,7 +10,7 @@ from django.shortcuts import get_object_or_404
 from .models import User, WorkerProfile, ClientProfile
 from .utils import to_e164
 from .serializers import (
-    RegisterSerializer, VerifySerializer, LoginSerializer,
+    ChangePasswordSerializer, RegisterSerializer, VerifySerializer, LoginSerializer,
     PasswordResetStartSerializer, PasswordResetConfirmSerializer,
     ResendOTPSerializer, UserSerializer, WorkerProfileUpdateSerializer, 
     ClientProfileUpdateSerializer, WorkerOnboardingSerializer, 
@@ -333,7 +333,61 @@ class UserProfileView(APIView):
             "detail": serializer.errors
         }, status=status.HTTP_400_BAD_REQUEST)
 
-
+class ChangePasswordView(APIView):
+    """
+    تغيير كلمة المرور
+    POST /api/users/change-password/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        serializer = ChangePasswordSerializer(
+            data=request.data,
+            context={'request': request}
+        )
+        
+        if not serializer.is_valid():
+            return Response({
+                "code": "validation_error",
+                "detail": serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # تغيير كلمة المرور
+        user = request.user
+        user.set_password(serializer.validated_data['new_password'])
+        user.save()
+        
+        return Response({
+            "success": True,
+            "message": "تم تغيير كلمة المرور بنجاح"
+        }, status=status.HTTP_200_OK)
+    
+class LogoutView(APIView):
+    """
+    تسجيل الخروج
+    POST /api/users/logout/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        user = request.user
+        
+        # إذا كان عامل، أوقف الموقع والـ online status
+        if user.is_worker and hasattr(user, 'worker_profile'):
+            worker_profile = user.worker_profile
+            worker_profile.is_online = False
+            worker_profile.location_sharing_enabled = False
+            worker_profile.location_status = 'disabled'
+            worker_profile.save(update_fields=[
+                'is_online', 
+                'location_sharing_enabled', 
+                'location_status'
+            ])
+        
+        return Response({
+            "success": True,
+            "message": "تم تسجيل الخروج بنجاح"
+        }, status=status.HTTP_200_OK)
 # ====== Views الجديدة لإدارة الملفات الشخصية ======
 
 class WorkerProfileView(APIView):

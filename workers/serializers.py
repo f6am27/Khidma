@@ -396,6 +396,82 @@ class WorkerProfileSerializer(serializers.ModelSerializer):
             return obj.worker_profile.location_accuracy
         return None
     
+    def get_profile_image_url(self, obj):
+        """احصل على صورة البروفايل مع URL الكامل"""
+        if hasattr(obj, 'worker_profile') and obj.worker_profile.profile_image:
+            request = self.context.get('request')
+            image_url = obj.worker_profile.profile_image.url
+            
+            # طباعة للـ debugging
+            print(f'📸 Worker {obj.id} image URL: {image_url}')
+            
+            # إذا كان لدينا request، اجعل URL مطلق
+            if request:
+                absolute_url = request.build_absolute_uri(image_url)
+                print(f'✅ Absolute URL: {absolute_url}')
+                return absolute_url
+            
+            # إرجاع URL النسبي
+            print(f'⚠️ No request context, returning relative URL')
+            return image_url
+        
+        print(f'❌ No profile image for worker {obj.id}')
+        return None
+    
+    def get_bio(self, obj):
+        return obj.worker_profile.bio if hasattr(obj, 'worker_profile') else ""
+
+    def get_service_area(self, obj):
+        return obj.worker_profile.service_area if hasattr(obj, 'worker_profile') else ""
+
+    def get_service_category(self, obj):
+        return obj.worker_profile.service_category if hasattr(obj, 'worker_profile') else ""
+
+    def get_base_price(self, obj):
+        if hasattr(obj, 'worker_profile'):
+            return float(obj.worker_profile.base_price)
+        return 0.0
+
+    def get_available_days(self, obj):
+        return obj.worker_profile.available_days if hasattr(obj, 'worker_profile') else []
+
+    def get_work_start_time(self, obj):
+        return str(obj.worker_profile.work_start_time) if hasattr(obj, 'worker_profile') else None
+
+    def get_work_end_time(self, obj):
+        return str(obj.worker_profile.work_end_time) if hasattr(obj, 'worker_profile') else None
+
+    def get_latitude(self, obj):
+        return obj.worker_profile.latitude if hasattr(obj, 'worker_profile') else None
+
+    def get_longitude(self, obj):
+        return obj.worker_profile.longitude if hasattr(obj, 'worker_profile') else None
+
+    def get_total_jobs_completed(self, obj):
+        return obj.worker_profile.total_jobs_completed if hasattr(obj, 'worker_profile') else 0
+
+    def get_average_rating(self, obj):
+        if hasattr(obj, 'worker_profile'):
+            return float(obj.worker_profile.average_rating)
+        return 0.0
+
+    def get_total_reviews(self, obj):
+        return obj.worker_profile.total_reviews if hasattr(obj, 'worker_profile') else 0
+
+    def get_is_verified(self, obj):
+        return obj.worker_profile.is_verified if hasattr(obj, 'worker_profile') else False
+
+    def get_is_available(self, obj):
+        return obj.worker_profile.is_available if hasattr(obj, 'worker_profile') else False
+
+    def get_is_online(self, obj):
+        return obj.worker_profile.is_online if hasattr(obj, 'worker_profile') else False
+
+    def get_full_name(self, obj):
+        return obj.get_full_name() or obj.phone
+
+    def get_member_since(self, obj):
+        return obj.date_joined.strftime("%B %Y")
 
 
 class WorkerProfileDetailSerializer(serializers.ModelSerializer):

@@ -312,3 +312,29 @@ class LocationSharingToggleSerializer(serializers.Serializer):
     تفعيل/إلغاء تفعيل مشاركة الموقع
     """
     enabled = serializers.BooleanField()
+
+class ChangePasswordSerializer(serializers.Serializer):
+    """
+    تغيير كلمة المرور للمستخدم المسجل دخوله
+    """
+    old_password = serializers.CharField(min_length=6, max_length=128, write_only=True)
+    new_password = serializers.CharField(min_length=6, max_length=128, write_only=True)
+    new_password_confirm = serializers.CharField(min_length=6, max_length=128, write_only=True)
+
+    def validate(self, attrs):
+        """التحقق من تطابق كلمات المرور الجديدة"""
+        if attrs['new_password'] != attrs['new_password_confirm']:
+            raise serializers.ValidationError({"new_password": "كلمات المرور الجديدة غير متطابقة"})
+        
+        # التحقق من أن كلمة المرور الجديدة مختلفة عن القديمة
+        if attrs['old_password'] == attrs['new_password']:
+            raise serializers.ValidationError({"new_password": "كلمة المرور الجديدة يجب أن تكون مختلفة عن القديمة"})
+        
+        return attrs
+
+    def validate_old_password(self, value):
+        """التحقق من صحة كلمة المرور القديمة"""
+        user = self.context['request'].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("كلمة المرور القديمة غير صحيحة")
+        return value

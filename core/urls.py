@@ -13,6 +13,8 @@ urlpatterns = [
     path('api/clients/', include('clients.urls')),
     path('api/chat/', include('chat.urls')),             # المحادثات
     path('api/notifications/', include('notifications.urls')), # الإشعارات
+    path('api/payments/', include('payments.urls')),
+
 ]
 
 # إضافة مسارات الملفات في Development فقط

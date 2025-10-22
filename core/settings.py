@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     'workers',
     'tasks',
     'clients',
+    'payments',
     'chat',
     'notifications',
 ]

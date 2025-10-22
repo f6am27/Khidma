@@ -177,6 +177,7 @@ class FavoriteWorkerSerializer(serializers.ModelSerializer):
     completedJobs = serializers.SerializerMethodField()
     isOnline = serializers.SerializerMethodField()
     profileImage = serializers.SerializerMethodField()
+    phone = serializers.SerializerMethodField()
     
     # Services
     services = serializers.SerializerMethodField()
@@ -196,13 +197,13 @@ class FavoriteWorkerSerializer(serializers.ModelSerializer):
             'id', 'worker_id', 'name', 'rating', 'reviewCount', 'location',
             'completedJobs', 'isOnline', 'profileImage', 'services',
             'addedAt', 'timesHired', 'totalSpent',
-            'startingPrice', 'lastSeen', 'notes'
+            'startingPrice', 'lastSeen', 'notes','phone' 
         ]
         read_only_fields = [
             'id', 'worker_id', 'name', 'rating', 'reviewCount', 'location',
             'completedJobs', 'isOnline', 'profileImage', 'services',
             'addedAt', 'timesHired', 'totalSpent',
-            'startingPrice', 'lastSeen'
+            'startingPrice', 'lastSeen','phone' 
         ]
     
     def get_name(self, obj):
@@ -281,6 +282,12 @@ class FavoriteWorkerSerializer(serializers.ModelSerializer):
         if hasattr(obj.worker, 'worker_profile'):
             return obj.worker.worker_profile.last_seen
         return obj.worker.last_login
+    
+    # بعد دالة get_lastSeen، أضف:
+
+    def get_phone(self, obj):
+        """Get worker phone number"""
+        return obj.worker.phone
 
 
 class FavoriteWorkerCreateSerializer(serializers.ModelSerializer):

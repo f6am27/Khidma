@@ -17,7 +17,11 @@ urlpatterns = [
     path('<int:pk>/status/', views.update_task_status, name='update-task-status'),  # PUT - Update status
     
     # Task review
-    path('<int:pk>/review/', views.TaskReviewCreateView.as_view(), name='create-task-review'),  # POST - Review task
+     path('<int:pk>/review/', views.TaskReviewCreateView.as_view(), name='create-task-review'),  # POST - Review task
+    
+    # بعد سطر path('<int:pk>/review/', ...)
+    path('my-reviews/', views.WorkerReceivedReviewsView.as_view(), name='worker-reviews'),  # GET - Worker's received reviews
+    path('review-stats/', views.TaskReviewStatsView.as_view(), name='review-stats'),  # GET - Review statistics
     
     # Worker endpoints - Available tasks
     path('available/', views.AvailableTasksListView.as_view(), name='available-tasks'),  # GET - Available tasks for workers
