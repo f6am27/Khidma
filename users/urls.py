@@ -6,7 +6,7 @@ from .views import (
     ResendRegisterOTPView, ResendPasswordResetOTPView,
     CompleteOnboardingView, UserProfileView,
     WorkerProfileView, ClientProfileView, WorkerOnboardingView,
-    update_worker_location, toggle_location_sharing, get_worker_location_info,ChangePasswordView,LogoutView
+    update_worker_location, toggle_location_sharing, get_worker_location_info,ChangePasswordView,LogoutView,SetWorkerOnlineView
 
 )
 from .upload_views import (
@@ -24,6 +24,7 @@ urlpatterns = [
     # ====== مصادقة المستخدم الأساسية ======
     path('register/', RegisterView.as_view(), name='register'),
     path('logout/', LogoutView.as_view(), name='logout'),
+    path('set-online/', SetWorkerOnlineView.as_view(), name='set_online'),
     path('verify/', VerifyView.as_view(), name='verify'),
     path('login/', LoginView.as_view(), name='login'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),

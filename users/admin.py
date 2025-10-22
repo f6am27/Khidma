@@ -17,7 +17,6 @@ class UserAdmin(BaseUserAdmin):
     search_fields = ['phone', 'email', 'first_name', 'last_name']
     ordering = ['-created_at']
     
-    # حقول التحرير
     fieldsets = (
         (None, {
             'fields': ('phone', 'email', 'password')
@@ -42,14 +41,12 @@ class UserAdmin(BaseUserAdmin):
     )
     
     def display_identifier(self, obj):
-        """عرض المعرف (phone أو email)"""
         if obj.role == 'admin':
             return obj.email or 'No Email'
         return obj.phone or 'No Phone'
     display_identifier.short_description = 'Identifier'
     
     def get_full_name(self, obj):
-        """الاسم الكامل"""
         return obj.get_full_name() or 'No Name'
     get_full_name.short_description = 'Full Name'
 
@@ -85,16 +82,16 @@ class AdminProfileAdmin(admin.ModelAdmin):
 
 @admin.register(WorkerProfile)
 class WorkerProfileAdmin(admin.ModelAdmin):
-    """إدارة ملفات العمال"""
+    """إدارة ملفات العمال - مع معلومات الموقع والحالة"""
     
     list_display = [
         'worker_name', 'service_category', 'service_area', 
-        'base_price', 'average_rating', 'total_jobs_completed', 
-        'is_verified', 'is_available', 'created_at'
+        'base_price', 'status_badges', 'location_info',
+        'average_rating', 'total_jobs_completed', 'created_at'
     ]
     list_filter = [
         'service_category', 'is_verified', 'is_available', 
-        'is_online', 'created_at'
+        'is_online', 'location_sharing_enabled', 'location_status', 'created_at'
     ]
     search_fields = [
         'user__first_name', 'user__last_name', 'user__phone',
@@ -115,27 +112,113 @@ class WorkerProfileAdmin(admin.ModelAdmin):
         ('Profile', {
             'fields': ('profile_image',)
         }),
-        ('Location', {
+        ('Base Location (منطقة الخدمة)', {
             'fields': ('latitude', 'longitude'),
             'classes': ('collapse',)
+        }),
+        ('🆕 Current Location (الموقع الحالي - مشاركة مباشرة)', {
+            'fields': (
+                'location_sharing_enabled',
+                'current_latitude',
+                'current_longitude',
+                'location_accuracy',
+                'location_last_updated',
+                'location_status',
+                'location_sharing_updated_at'
+            ),
+            'description': 'معلومات الموقع الحالي للعامل (يتم تحديثها تلقائياً)'
         }),
         ('Statistics', {
             'fields': ('total_jobs_completed', 'average_rating', 'total_reviews'),
             'classes': ('collapse',)
         }),
         ('Status', {
-            'fields': ('is_verified', 'is_available', 'is_online')
+            'fields': ('is_verified', 'is_available', 'is_online', 'last_seen')
         }),
     )
     
-    readonly_fields = ['total_jobs_completed', 'average_rating', 'total_reviews']
+    readonly_fields = [
+        'total_jobs_completed', 'average_rating', 'total_reviews',
+        'location_last_updated', 'location_sharing_updated_at', 'last_seen'
+    ]
     
     def worker_name(self, obj):
         return obj.user.get_full_name() or obj.user.phone
     worker_name.short_description = 'Worker Name'
     
+    def status_badges(self, obj):
+
+        """عرض حالات العامل"""
+
+        badges = []
+
+        
+
+        # Online Status
+
+        if obj.is_online:
+
+            badges.append('🟢')
+
+        else:
+
+            badges.append('⚫')
+
+        
+
+        # Location Sharing
+
+        if obj.location_sharing_enabled and obj.location_status == 'active':
+
+            badges.append('📍')
+
+        else:
+
+            badges.append('📍❌')
+
+        
+
+        # Available
+
+        if obj.is_available:
+
+            badges.append('✅')
+
+        
+
+        return ' '.join(badges)
+
+    status_badges.short_description = 'Status'
+
+
+    def location_info(self, obj):
+        """معلومات الموقع الحالي"""
+        if obj.location_sharing_enabled and obj.current_latitude and obj.current_longitude:
+            last_update = obj.location_last_updated.strftime('%H:%M %d/%m') if obj.location_last_updated else 'N/A'
+            accuracy = f"{float(obj.location_accuracy):.1f}m" if obj.location_accuracy else 'N/A'
+            
+            # ✅ التحويل إلى string مباشرة بدون format
+            lat_str = str(obj.current_latitude)[:9]  # أول 9 أرقام
+            lng_str = str(obj.current_longitude)[:9]
+            
+            return format_html(
+                '<div style="font-size:11px;">'
+                '<strong>Lat:</strong> {}<br>'  # ✅ بدون format
+                '<strong>Lng:</strong> {}<br>'  # ✅ بدون format
+                '<strong>Accuracy:</strong> {}<br>'
+                '<strong>Updated:</strong> {}'
+                '</div>',
+                lat_str,
+                lng_str,
+                accuracy,
+                last_update
+            )
+        return format_html('<span style="color:#999;">No Location</span>')
+    location_info.short_description = 'Current Location'
+    
     def get_queryset(self, request):
         return super().get_queryset(request).select_related('user')
+
 
 @admin.register(ClientProfile)
 class ClientProfileAdmin(admin.ModelAdmin):
@@ -146,9 +229,9 @@ class ClientProfileAdmin(admin.ModelAdmin):
         'total_tasks_published', 'total_tasks_completed', 
         'success_rate_display', 'total_amount_spent', 'created_at'
     ]
-    list_filter = ['gender', 'notifications_enabled', 'created_at']  # ✅ حذف preferred_language
+    list_filter = ['gender', 'notifications_enabled', 'created_at']
     search_fields = [
-        'user__first_name', 'user__last_name', 'user__phone', 'address'  # ✅ حذف bio
+        'user__first_name', 'user__last_name', 'user__phone', 'address'
     ]
     ordering = ['-created_at']
     
@@ -157,7 +240,7 @@ class ClientProfileAdmin(admin.ModelAdmin):
             'fields': ('user',)
         }),
         ('Personal Info', {
-            'fields': ('gender',)  # ✅ حذف bio, date_of_birth
+            'fields': ('gender',)
         }),
         ('Contact Info', {
             'fields': ('address', 'emergency_contact')
@@ -170,7 +253,7 @@ class ClientProfileAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
         ('Preferences', {
-            'fields': ('notifications_enabled',),  # ✅ حذف preferred_language
+            'fields': ('notifications_enabled',),
             'classes': ('collapse',)
         }),
     )

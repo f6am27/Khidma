@@ -51,6 +51,8 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'users.middleware.ReactivateMiddleware',  
+
 ]
 
 ROOT_URLCONF = 'core.urls'
@@ -260,9 +262,9 @@ if USE_CELERY:
     CELERY_RESULT_SERIALIZER = 'json'
     CELERY_TIMEZONE = TIME_ZONE
 
-    # في settings.py - أضف هذه الإعدادات
 GLOBAL_OTP_RATE_LIMIT = {
     'MAX_ATTEMPTS_PER_PHONE_PER_HOUR': 10,  # 10 محاولات كحد أقصى في الساعة
     'MAX_ATTEMPTS_PER_IP_PER_HOUR': 20,     # 20 محاولة من نفس الـ IP
     'BLOCK_DURATION_MINUTES': 60,           # مدة المنع بالدقائق
 }
+

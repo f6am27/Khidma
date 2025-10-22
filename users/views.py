@@ -134,6 +134,12 @@ class LoginView(APIView):
         # المستخدم تم التحقق منه في serializer
         user = serializer.validated_data['user']
         
+        # ✅ تحديث is_online و is_available عند تسجيل الدخول
+        if user.is_worker and hasattr(user, 'worker_profile'):
+            user.worker_profile.is_online = True
+            user.worker_profile.is_available = True  # ✅ جديد
+            user.worker_profile.save(update_fields=['is_online', 'is_available'])
+        
         # إنشاء JWT tokens
         refresh = RefreshToken.for_user(user)
 
@@ -147,7 +153,6 @@ class LoginView(APIView):
                 "onboarding_completed": user.onboarding_completed,
             }
         }, status=status.HTTP_200_OK)
-
 
 class PasswordResetStartView(APIView):
     """
@@ -372,14 +377,16 @@ class LogoutView(APIView):
     def post(self, request):
         user = request.user
         
-        # إذا كان عامل، أوقف الموقع والـ online status
+        # إذا كان عامل، أوقف كل شيء
         if user.is_worker and hasattr(user, 'worker_profile'):
             worker_profile = user.worker_profile
             worker_profile.is_online = False
+            worker_profile.is_available = False  # ✅ جديد
             worker_profile.location_sharing_enabled = False
             worker_profile.location_status = 'disabled'
             worker_profile.save(update_fields=[
-                'is_online', 
+                'is_online',
+                'is_available',  # ✅ جديد
                 'location_sharing_enabled', 
                 'location_status'
             ])
@@ -387,7 +394,46 @@ class LogoutView(APIView):
         return Response({
             "success": True,
             "message": "تم تسجيل الخروج بنجاح"
+        }, status=status.HTTP_200_OK)   
+
+class SetWorkerOnlineView(APIView):
+    """
+    تحديث حالة is_online للعامل
+    POST /api/users/set-online/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        user = request.user
+        
+        if not user.is_worker:
+            return Response({
+                "code": "not_worker",
+                "detail": "هذا العضو ليس عاملاً"
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        if not hasattr(user, 'worker_profile'):
+            return Response({
+                "code": "profile_not_found",
+                "detail": "ملف العامل غير موجود"
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        is_online = request.data.get('is_online', True)
+        
+        worker_profile = user.worker_profile
+        worker_profile.is_online = is_online
+        worker_profile.is_available = True  # ✅ جديد - دائماً متاح عند فتح التطبيق
+        worker_profile.save(update_fields=['is_online', 'is_available'])
+        
+        return Response({
+            "success": True,
+            "message": f"تم تحديث الحالة إلى {'متصل' if is_online else 'غير متصل'}",
+            "data": {
+                "is_online": worker_profile.is_online,
+                "is_available": worker_profile.is_available  # ✅ جديد
+            }
         }, status=status.HTTP_200_OK)
+    
 # ====== Views الجديدة لإدارة الملفات الشخصية ======
 
 class WorkerProfileView(APIView):

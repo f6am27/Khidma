@@ -59,6 +59,28 @@ class User(AbstractUser):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
+    # ✅✅✅ أضف هذه الحقول الثلاثة هنا ✅✅✅
+    # حقول التعليق والإيقاف المؤقت
+    is_suspended = models.BooleanField(
+        default=False,
+        verbose_name="معلق مؤقتاً",
+        help_text="هل الحساب معلق مؤقتاً"
+    )
+    
+    suspended_until = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name="معلق حتى",
+        help_text="تاريخ انتهاء التعليق - إذا كان فارغاً = إيقاف نهائي"
+    )
+    
+    suspension_reason = models.TextField(
+        blank=True,
+        verbose_name="سبب التعليق",
+        help_text="سبب تعليق الحساب"
+    )
+    # ✅✅✅ نهاية الإضافة ✅✅✅
+    
     # تحديد حقل تسجيل الدخول للأدمن
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['first_name']
@@ -70,7 +92,7 @@ class User(AbstractUser):
         verbose_name = "User"
         verbose_name_plural = "Users"
         ordering = ['-created_at']
-    
+        
     def clean(self):
         """التحقق من صحة البيانات"""
         super().clean()

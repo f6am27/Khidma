@@ -481,8 +481,8 @@ def toggle_location_sharing(request):
     )
     
     # ✅ جديد: تحديث is_online تلقائياً
-    worker_profile.is_online = new_status
-    worker_profile.save(update_fields=['is_online'])
+    # worker_profile.is_online = new_status
+    # worker_profile.save(update_fields=['is_online'])
     
     return Response({
         "success": True,
