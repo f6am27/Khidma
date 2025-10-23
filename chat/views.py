@@ -6,6 +6,7 @@ from rest_framework.pagination import PageNumberPagination
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
 from django.db import transaction
+from django.utils import timezone
 
 from .models import Conversation, Message, BlockedUser, Report
 from .serializers import (
@@ -37,8 +38,10 @@ class ConversationListView(generics.ListAPIView):
     def get_queryset(self):
         user = self.request.user
         
+        # ✅ استبعاد المحادثات المحذوفة من قبل المستخدم
         conversations = Conversation.objects.filter(
-            Q(client=user) | Q(worker=user),
+            Q(client=user, deleted_by_client=False) | 
+            Q(worker=user, deleted_by_worker=False),
             is_active=True
         ).select_related('client', 'worker').prefetch_related('messages')
         
@@ -82,7 +85,16 @@ class ConversationMessagesView(generics.ListAPIView):
         # تحديد الرسائل كمقروءة
         conversation.mark_messages_as_read(user)
         
-        return conversation.messages.select_related('sender').order_by('-created_at')
+        # ✅ فلترة الرسائل بناءً على تاريخ الحذف (مع التحقق من None)
+        messages = conversation.messages.select_related('sender').order_by('-created_at')
+        
+        # إذا كان المستخدم حذف المحادثة، أظهر فقط الرسائل بعد تاريخ الحذف
+        if user == conversation.client and conversation.deleted_at_by_client is not None:
+            messages = messages.filter(created_at__gt=conversation.deleted_at_by_client)
+        elif user == conversation.worker and conversation.deleted_at_by_worker is not None:
+            messages = messages.filter(created_at__gt=conversation.deleted_at_by_worker)
+        
+        return messages
 
 
 @api_view(['POST'])
@@ -119,6 +131,28 @@ def send_message(request, conversation_id):
             status=status.HTTP_403_FORBIDDEN
         )
     
+    # ✅ إعادة تفعيل المحادثة مع الحفاظ على تاريخ الحذف
+    if user == conversation.client:
+        # إذا العميل هو المرسل، أعد تفعيلها له واحذف التاريخ (يرى كل الرسائل)
+        if conversation.deleted_by_client:
+            conversation.deleted_by_client = False
+            conversation.deleted_at_by_client = None
+        # العامل: فقط أعد التفعيل دون حذف التاريخ
+        if conversation.deleted_by_worker:
+            conversation.deleted_by_worker = False
+            # ⚠️ نترك deleted_at_by_worker كما هو
+    else:
+        # إذا العامل هو المرسل، أعد تفعيلها له واحذف التاريخ (يرى كل الرسائل)
+        if conversation.deleted_by_worker:
+            conversation.deleted_by_worker = False
+            conversation.deleted_at_by_worker = None
+        # العميل: فقط أعد التفعيل دون حذف التاريخ
+        if conversation.deleted_by_client:
+            conversation.deleted_by_client = False
+            # ✅ نترك deleted_at_by_client كما هو (هذا السطر هو المهم!)
+
+    conversation.save()
+
     serializer = SendMessageSerializer(data=request.data)
     
     if serializer.is_valid():
@@ -151,8 +185,19 @@ def delete_conversation(request, conversation_id):
             status=status.HTTP_403_FORBIDDEN
         )
     
-    conversation.is_active = False
-    conversation.save()
+    # ✅ حذف من جهة المستخدم مع حفظ التاريخ
+    if user == conversation.client:
+        conversation.deleted_by_client = True
+        conversation.deleted_at_by_client = timezone.now()
+    else:
+        conversation.deleted_by_worker = True
+        conversation.deleted_at_by_worker = timezone.now()
+    
+    # ✅ إذا حذفها الطرفان، احذفها نهائياً
+    if conversation.deleted_by_client and conversation.deleted_by_worker:
+        conversation.delete()
+    else:
+        conversation.save()
     
     return Response({'message': 'Conversation supprimée avec succès'})
 
@@ -271,7 +316,7 @@ def blocked_users_list(request):
         })
     
     return Response({'blocked_users': data})
-# إضافة هذا في chat/views.py
+
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])

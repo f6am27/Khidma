@@ -11,7 +11,8 @@ class ConversationAdmin(admin.ModelAdmin):
     """إدارة المحادثات"""
     list_display = [
         'id', 'client_info', 'worker_info', 'total_messages',
-        'is_active', 'last_message_at', 'created_at'
+        'is_active', 'deleted_by_client', 'deleted_by_worker',  # ✅ أضف هذا
+    'deleted_at_display', 'last_message_at', 'created_at'
     ]
     list_filter = ['is_active', 'created_at', 'last_message_at']
     search_fields = [
@@ -57,6 +58,22 @@ class ConversationAdmin(admin.ModelAdmin):
             )
         return '-'
     worker_info.short_description = 'Worker'
+
+    def deleted_at_display(self, obj):
+        """عرض تاريخ الحذف"""
+        result = []
+        if obj.deleted_at_by_client:
+            result.append(format_html(
+                '👤 <span style="color: orange;">Client: {}</span>',
+                obj.deleted_at_by_client.strftime('%Y-%m-%d %H:%M')
+            ))
+        if obj.deleted_at_by_worker:
+            result.append(format_html(
+                '🔧 <span style="color: blue;">Worker: {}</span>',
+                obj.deleted_at_by_worker.strftime('%Y-%m-%d %H:%M')
+            ))
+        return format_html('<br>'.join(result)) if result else '-'
+    deleted_at_display.short_description = 'تاريخ الحذف'
     
     def get_queryset(self, request):
         return super().get_queryset(request).select_related(
@@ -88,6 +105,12 @@ class MessageAdmin(admin.ModelAdmin):
         }),
         ('État', {
             'fields': ('is_read', 'read_at')
+        }),
+            ('Suppression', {  
+        'fields': (
+            'deleted_by_client', 'deleted_at_by_client',
+            'deleted_by_worker', 'deleted_at_by_worker'
+        )
         }),
         ('Dates', {
             'fields': ('created_at', 'updated_at'),

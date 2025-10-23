@@ -32,6 +32,13 @@ class Conversation(models.Model):
         default=True,
         help_text="هل المحادثة نشطة"
     )
+
+    deleted_by_client = models.BooleanField(default=False)
+    deleted_by_worker = models.BooleanField(default=False)
+
+    # ✅ أضف هذين السطرين الجديدين:
+    deleted_at_by_client = models.DateTimeField(null=True, blank=True)
+    deleted_at_by_worker = models.DateTimeField(null=True, blank=True)
     
     # إحصائيات المحادثة
     total_messages = models.PositiveIntegerField(
