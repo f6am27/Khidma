@@ -12,8 +12,7 @@ class NotificationSerializer(serializers.ModelSerializer):
     """
     # معلومات إضافية
     time_ago = serializers.SerializerMethodField()
-    recipient_role = serializers.ReadOnlyField()
-    
+    recipient_role = serializers.SerializerMethodField()     
     # معلومات المهمة المرتبطة
     task_title = serializers.SerializerMethodField()
     task_id = serializers.SerializerMethodField()
@@ -65,6 +64,10 @@ class NotificationSerializer(serializers.ModelSerializer):
     def get_task_id(self, obj):
         """الحصول على رقم المهمة المرتبطة"""
         return obj.related_task.id if obj.related_task else None
+    
+    def get_recipient_role(self, obj):
+        """الحصول على دور المستلم"""
+        return obj.recipient.role if obj.recipient else 'client'
 
 
 class NotificationListSerializer(NotificationSerializer):

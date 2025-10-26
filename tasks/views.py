@@ -11,6 +11,7 @@ import random
 from math import radians, cos, sin, asin, sqrt
 
 from .models import ServiceRequest, TaskApplication, TaskReview, TaskNotification
+from notifications.utils import notify_new_task_available
 from .serializers import (
     ServiceRequestListSerializer,
     ServiceRequestDetailSerializer, 
@@ -42,21 +43,36 @@ class ServiceRequestCreateView(generics.CreateAPIView):
         return service_request
     
     def _notify_workers(self, service_request):
-        """Notify workers in the same category and area"""
+        """
+        ✅ إشعار العمال المناسبين بمهمة جديدة مع Firebase Push Notifications
+        Notify relevant workers about new task with Firebase
+        """
+        # جلب العمال المناسبين (نفس الفئة + متاحين + في نفس المنطقة)
+        area_name = service_request.location.split(',')[0].strip()
+        
         relevant_workers = User.objects.filter(
-            worker_services__category=service_request.service_category,
-            worker_profile__is_available=True,
+            role='worker',
+            is_verified=True,
             onboarding_completed=True,
-            worker_profile__service_area__icontains=service_request.location.split(',')[0]
-        ).distinct()
-        for worker in relevant_workers[:10]:
-            TaskNotification.objects.create(
-                recipient=worker,
-                service_request=service_request,
-                notification_type='task_posted',
-                title=f'Nouvelle tâche disponible: {service_request.service_category.name}',
-                message=f'Une nouvelle tâche "{service_request.title}" est disponible dans votre zone.'
-            )
+            worker_profile__is_available=True,
+            worker_services__category=service_request.service_category,
+            worker_profile__service_area__icontains=area_name
+        ).distinct()[:20]  # أقصى 20 عامل
+        
+        # إرسال إشعار لكل عامل مناسب
+        notifications_sent = 0
+        for worker in relevant_workers:
+            try:
+                result = notify_new_task_available(
+                    worker_user=worker,
+                    task=service_request
+                )
+                if result.get('success'):
+                    notifications_sent += 1
+            except Exception as e:
+                print(f"❌ Failed to notify worker {worker.id}: {e}")
+        
+        print(f"📢 Notified {notifications_sent}/{len(relevant_workers)} workers about task {service_request.id}")
 
 
 class ClientTasksListView(generics.ListAPIView):
@@ -455,7 +471,7 @@ def update_task_status(request, pk):
         print(f'Budget: {service_request.budget}')
         print(f'═══════════════════════════════')
         
-        # Validate final_price
+        # ✅ التحسين 1: Validate final_price
         if final_price is None or final_price == '':
             raise ValidationError({
                 'final_price': 'Final price is required'
@@ -465,16 +481,33 @@ def update_task_status(request, pk):
         try:
             final_price_float = float(final_price)
             
+            # ✅ التحسين 2: Validation للمبلغ المدفوع
+            if final_price_float < 0:
+                raise ValidationError({
+                    'final_price': 'Amount cannot be negative'
+                })
+            
             if final_price_float <= 0:
                 raise ValidationError({
                     'final_price': 'Amount must be greater than zero'
                 })
             
+            # ✅ التحسين 3: تحقق من أن المبلغ منطقي (لا يتجاوز 3 أضعاف الميزانية)
+            max_reasonable_amount = service_request.budget * 3
+            if final_price_float > max_reasonable_amount:
+                raise ValidationError({
+                    'final_price': f'Amount ({final_price_float} MRU) seems too high. Maximum reasonable amount is {max_reasonable_amount} MRU based on budget.'
+                })
+            
             service_request.final_price = final_price_float
             
-        except (ValueError, TypeError) as e:
+        except ValueError as e:
             raise ValidationError({
                 'final_price': f'Invalid amount format: {str(e)}'
+            })
+        except TypeError as e:
+            raise ValidationError({
+                'final_price': f'Invalid amount type: {str(e)}'
             })
         
         # Update task status
@@ -484,19 +517,58 @@ def update_task_status(request, pk):
         
         print(f'✅ Task saved with final_price: {service_request.final_price}')
         
-        # ✅ CREATE PAYMENT AUTOMATICALLY
+        # ✅ التحسين 4: CREATE PAYMENT with error handling
         from payments.models import Payment
         
-        payment = Payment.objects.create(
-            task=service_request,
-            payer=service_request.client,
-            receiver=service_request.assigned_worker,
-            amount=final_price_float,
-            payment_method='cash',
-            status='completed'
+        try:
+            payment = Payment.objects.create(
+                task=service_request,
+                payer=service_request.client,
+                receiver=service_request.assigned_worker,
+                amount=final_price_float,
+                payment_method='cash',
+                status='completed',
+                completed_at=timezone.now()
+            )
+            
+            print(f'✅ Payment created successfully: Payment ID={payment.id}, Amount={payment.amount} MRU')
+            
+        except Exception as e:
+            # ✅ التحسين 5: إذا فشل إنشاء الدفع، ألغِ تحديث المهمة
+            print(f'❌ Payment creation failed: {str(e)}')
+            
+            # Rollback task status
+            service_request.status = 'work_completed'
+            service_request.final_price = None
+            service_request.completed_at = None
+            service_request.save()
+            
+            return Response({
+                'error': f'Payment creation failed: {str(e)}. Task status rolled back.',
+                'details': 'Please try again or contact support.'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        # Update worker stats
+        worker = service_request.assigned_worker
+        if hasattr(worker, 'worker_profile'):
+            worker.worker_profile.total_jobs_completed += 1
+            worker.worker_profile.save()
+        
+        # Send notification to worker
+        TaskNotification.objects.create(
+            recipient=worker,
+            service_request=service_request,
+            notification_type='task_completed',
+            title='Task completed and paid',
+            message=f'Task "{service_request.title}" completed and paid. Amount: {service_request.final_price} MRU'
         )
         
-        print(f'✅ Payment created: {payment.id} - Amount: {payment.amount} MRU')
+        return Response({
+            'message': 'Task completed and payment recorded successfully',
+            'final_price': float(service_request.final_price),
+            'payment_id': payment.id,
+            'task_id': service_request.id
+        })
         
         # Update worker stats
         worker = service_request.assigned_worker

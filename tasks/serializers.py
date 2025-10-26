@@ -5,6 +5,7 @@ from django.utils import timezone
 from .models import ServiceRequest, TaskApplication, TaskReview, TaskNotification
 from users.models import User
 from services.serializers import ServiceCategorySerializer
+from notifications.utils import notify_new_task_available
 
 # --------------------------------------------------
 # معلومات أساسية للمستخدم
@@ -348,15 +349,21 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
             )[:15]
             workers_to_notify = list(area_workers)
 
+    # ✅ إرسال إشعارات مع Firebase
+        notifications_sent = 0
         for worker in workers_to_notify:
-            TaskNotification.objects.create(
-                recipient=worker,
-                service_request=task,
-                notification_type='task_posted',
-                title=f'مهمة جديدة: {task.service_category.name}',
-                message=f'مهمة "{task.title}" متاحة في {task.location}'
-            )
-        return len(workers_to_notify)
+            try:
+                result = notify_new_task_available(
+                    worker_user=worker,
+                    task=task
+                )
+                if result.get('success'):
+                    notifications_sent += 1
+            except Exception as e:
+                print(f"❌ Failed to notify worker {worker.id}: {e}")
+        
+        print(f"📢 Notified {notifications_sent}/{len(workers_to_notify)} workers")
+        return notifications_sent
 
 # --------------------------------------------------
 # محول المهام المتاحة للعمال
