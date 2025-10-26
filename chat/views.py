@@ -164,6 +164,17 @@ def send_message(request, conversation_id):
             )
         
         response_serializer = MessageSerializer(message, context={'request': request})
+                
+                # ✅ إشعار المستلم برسالة جديدة
+        recipient = conversation.worker if user == conversation.client else conversation.client
+        from notifications.utils import notify_message_received
+        notify_message_received(
+                    recipient_user=recipient,
+                    sender_user=user,
+                    task=conversation.task if hasattr(conversation, 'task') else None,
+                    message_preview=message.content[:50]
+                )
+                
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
     
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -400,7 +411,15 @@ def start_conversation(request):
                 sender=current_user,
                 content=initial_message.strip()
             )
-    
+            # ✅ إشعار المستلم برسالة جديدة
+        from notifications.utils import notify_message_received
+        notify_message_received(
+            recipient_user=other_user,
+            sender_user=current_user,
+            task=conversation.task if hasattr(conversation, 'task') else None,
+            message_preview=first_message.content[:50]
+        )
+            
     # تحضير معلومات المستخدم الآخر
     other_user_data = {
         'id': other_user.id,

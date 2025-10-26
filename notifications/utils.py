@@ -161,6 +161,18 @@ def notify_task_completed(client_user, worker_user, task):
         related_task=task
     )
 
+def notify_work_started(client_user, worker_user, task):
+    """إشعار العميل ببدء العامل في العمل"""
+    worker_name = worker_user.get_full_name() or worker_user.phone or "Le prestataire"
+    
+    return create_and_send_notification(
+        recipient_user=client_user,
+        notification_type='work_started',
+        title='Travail commencé',
+        message=f'{worker_name} a commencé à travailler sur votre demande "{task.title}".',
+        related_task=task
+    )
+
 def notify_payment_received(client_user, task, amount):
     """إشعار استلام الدفع للعميل"""
     return create_and_send_notification(
@@ -193,8 +205,13 @@ def notify_new_task_available(worker_user, task):
 
 def notify_message_received(recipient_user, sender_user, task, message_preview=""):
     """إشعار استلام رسالة"""
-    sender_name = sender_user.get_full_name() or sender_user.phone
-    message_text = f'{sender_name} vous a envoyé un message concernant votre demande "{task.title}".'
+    sender_name = sender_user.get_full_name() or sender_user.phone or "Un utilisateur"
+    
+    # تجهيز نص الإشعار حسب وجود المهمة
+    if task:
+        message_text = f'{sender_name} vous a envoyé un message concernant "{task.title}".'
+    else:
+        message_text = f'{sender_name} vous a envoyé un message.'
     
     if message_preview:
         message_text += f' "{message_preview[:50]}..."'

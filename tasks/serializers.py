@@ -322,20 +322,30 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
         return instance
 
     def _notify_relevant_workers(self, task, location_method):
+        """
+        إشعار العمال المناسبين بمهمة جديدة
+        Notify relevant workers about new task
+        """
         from users.models import User
+        from notifications.utils import notify_new_task_available
+        
+        # جلب جميع العمال المؤهلين في نفس الفئة
         relevant_workers = User.objects.filter(
             role='worker',
             is_verified=True,
             onboarding_completed=True,
             worker_profile__is_available=True,
-            worker_services__category=task.service_category
-        ).distinct()
-
+            worker_profile__service_category=task.service_category  
+            ).distinct()
+        # تحديد العمال المستهدفين بناءً على طريقة الموقع
         if task.latitude and task.longitude and location_method == 'current_location':
+            # إذا العميل استخدم GPS، أرسل للعمال القريبين فقط (30 كم)
             nearby_workers = []
             for worker in relevant_workers:
-                if hasattr(worker, 'worker_profile') and worker.worker_profile.location_sharing_enabled and \
-                   worker.worker_profile.current_latitude and worker.worker_profile.current_longitude:
+                if hasattr(worker, 'worker_profile') and \
+                worker.worker_profile.location_sharing_enabled and \
+                worker.worker_profile.current_latitude and \
+                worker.worker_profile.current_longitude:
                     distance = worker.worker_profile.calculate_distance_to(
                         float(task.latitude), float(task.longitude)
                     )
@@ -343,13 +353,10 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
                         nearby_workers.append(worker)
             workers_to_notify = nearby_workers[:20]
         else:
-            area_name = task.location.split(',')[0].strip()
-            area_workers = relevant_workers.filter(
-                worker_profile__service_area__icontains=area_name
-            )[:15]
-            workers_to_notify = list(area_workers)
+            # إذا العميل اختار منطقة، أرسل لجميع العمال في نفس الفئة
+            workers_to_notify = list(relevant_workers[:50])
 
-    # ✅ إرسال إشعارات مع Firebase
+        # إرسال إشعارات مع Firebase
         notifications_sent = 0
         for worker in workers_to_notify:
             try:
@@ -364,7 +371,6 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
         
         print(f"📢 Notified {notifications_sent}/{len(workers_to_notify)} workers")
         return notifications_sent
-
 # --------------------------------------------------
 # محول المهام المتاحة للعمال
 # --------------------------------------------------

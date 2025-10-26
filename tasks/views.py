@@ -11,7 +11,7 @@ import random
 from math import radians, cos, sin, asin, sqrt
 
 from .models import ServiceRequest, TaskApplication, TaskReview, TaskNotification
-from notifications.utils import notify_new_task_available
+from notifications.utils import notify_new_task_available,notify_task_published
 from .serializers import (
     ServiceRequestListSerializer,
     ServiceRequestDetailSerializer, 
@@ -26,6 +26,7 @@ from .serializers import (
 from users.models import User
 from services.models import ServiceCategory
 
+
 class ServiceRequestCreateView(generics.CreateAPIView):
     """
     Create new service request (for clients)
@@ -39,42 +40,12 @@ class ServiceRequestCreateView(generics.CreateAPIView):
         if self.request.user.role != 'client':
             raise PermissionDenied("Only clients can create service requests")
         service_request = serializer.save()
-        self._notify_workers(service_request)
+        
+        # ✅ إشعار العميل بنشر المهمة بنجاح
+        from notifications.utils import notify_task_published
+        notify_task_published(client_user=self.request.user, task=service_request)
         return service_request
     
-    def _notify_workers(self, service_request):
-        """
-        ✅ إشعار العمال المناسبين بمهمة جديدة مع Firebase Push Notifications
-        Notify relevant workers about new task with Firebase
-        """
-        # جلب العمال المناسبين (نفس الفئة + متاحين + في نفس المنطقة)
-        area_name = service_request.location.split(',')[0].strip()
-        
-        relevant_workers = User.objects.filter(
-            role='worker',
-            is_verified=True,
-            onboarding_completed=True,
-            worker_profile__is_available=True,
-            worker_services__category=service_request.service_category,
-            worker_profile__service_area__icontains=area_name
-        ).distinct()[:20]  # أقصى 20 عامل
-        
-        # إرسال إشعار لكل عامل مناسب
-        notifications_sent = 0
-        for worker in relevant_workers:
-            try:
-                result = notify_new_task_available(
-                    worker_user=worker,
-                    task=service_request
-                )
-                if result.get('success'):
-                    notifications_sent += 1
-            except Exception as e:
-                print(f"❌ Failed to notify worker {worker.id}: {e}")
-        
-        print(f"📢 Notified {notifications_sent}/{len(relevant_workers)} workers about task {service_request.id}")
-
-
 class ClientTasksListView(generics.ListAPIView):
     """
     Get my tasks - works for both client and worker
@@ -302,13 +273,13 @@ class TaskApplicationCreateView(generics.CreateAPIView):
             worker=request.user
         )
         
-        TaskNotification.objects.create(
-            recipient=service_request.client,
-            service_request=service_request,
-            task_application=application,
-            notification_type='application_received',
-            title='Nouvelle candidature reçue',
-            message=f'{request.user.get_full_name() or request.user.phone} s\'est porté candidat pour "{service_request.title}"'
+        # ✅ إشعار العميل بتقدم العامل
+        from notifications.utils import notify_worker_applied
+        notify_worker_applied(
+            client_user=service_request.client,
+            worker_user=request.user,
+            task=service_request,
+            application=application
         )
         
         return Response(
@@ -374,28 +345,25 @@ def accept_worker(request, pk):
         responded_at=timezone.now()
     )
     
-    TaskNotification.objects.create(
-        recipient=application.worker,
-        service_request=service_request,
-        task_application=application,
-        notification_type='application_accepted',
-        title='Candidature acceptée!',
-        message=f'Votre candidature pour "{service_request.title}" a été acceptée!'
+    # ✅ إشعار العامل المقبول
+    from notifications.utils import notify_application_accepted
+    notify_application_accepted(
+        worker_user=application.worker,
+        task=service_request,
+        client_user=request.user
     )
     
+    # ✅ إشعار العمال المرفوضين
+    from notifications.utils import notify_application_rejected
     rejected_applications = TaskApplication.objects.filter(
         service_request=service_request,
         application_status='rejected'
     )
     
     for rejected_app in rejected_applications:
-        TaskNotification.objects.create(
-            recipient=rejected_app.worker,
-            service_request=service_request,
-            task_application=rejected_app,
-            notification_type='application_rejected',
-            title='Candidature non retenue',
-            message=f'Votre candidature pour "{service_request.title}" n\'a pas été retenue cette fois.'
+        notify_application_rejected(
+            worker_user=rejected_app.worker,
+            task=service_request
         )
     
     return Response({
@@ -403,7 +371,6 @@ def accept_worker(request, pk):
         'task_status': 'active',
         'assigned_worker': application.worker.get_full_name() or application.worker.phone
     })
-
 
 @api_view(['PUT'])
 @permission_classes([permissions.IsAuthenticated])
@@ -425,13 +392,14 @@ def update_task_status(request, pk):
         service_request.work_started_at = timezone.now()
         service_request.save()
         
-        TaskNotification.objects.create(
-            recipient=service_request.client,
-            service_request=service_request,
-            notification_type='work_started',
-            title='Work started',
-            message=f'Worker has started work on "{service_request.title}".'
+        # ✅ إشعار العميل ببدء العمل
+        from notifications.utils import notify_work_started
+        notify_work_started(
+            client_user=service_request.client,
+            worker_user=request.user,
+            task=service_request
         )
+        
         return Response({'message': 'Work started successfully.'})
     
     if new_status == 'work_completed':
@@ -446,13 +414,14 @@ def update_task_status(request, pk):
         service_request.work_completed_at = timezone.now()
         service_request.save()
         
-        TaskNotification.objects.create(
-            recipient=service_request.client,
-            service_request=service_request,
-            notification_type='work_completed',
-            title='Work completed',
-            message=f'Worker has completed work on "{service_request.title}". Please verify and confirm.'
+        # ✅ إشعار العميل بإنهاء المهمة
+        from notifications.utils import notify_task_completed
+        notify_task_completed(
+            client_user=service_request.client,
+            worker_user=request.user,
+            task=service_request
         )
+        
         return Response({'message': 'Work marked as completed. Waiting for client confirmation.'})
     
     elif new_status == 'completed':
@@ -554,35 +523,20 @@ def update_task_status(request, pk):
             worker.worker_profile.total_jobs_completed += 1
             worker.worker_profile.save()
         
-        # Send notification to worker
-        TaskNotification.objects.create(
-            recipient=worker,
-            service_request=service_request,
-            notification_type='task_completed',
-            title='Task completed and paid',
-            message=f'Task "{service_request.title}" completed and paid. Amount: {service_request.final_price} MRU'
+        # ✅ إشعار العميل بالدفع
+        from notifications.utils import notify_payment_received
+        notify_payment_received(
+            client_user=service_request.client,
+            task=service_request,
+            amount=service_request.final_price
         )
         
-        return Response({
-            'message': 'Task completed and payment recorded successfully',
-            'final_price': float(service_request.final_price),
-            'payment_id': payment.id,
-            'task_id': service_request.id
-        })
-        
-        # Update worker stats
-        worker = service_request.assigned_worker
-        if hasattr(worker, 'worker_profile'):
-            worker.worker_profile.total_jobs_completed += 1
-            worker.worker_profile.save()
-        
-        # Send notification to worker
-        TaskNotification.objects.create(
-            recipient=worker,
-            service_request=service_request,
-            notification_type='task_completed',
-            title='Task completed and paid',
-            message=f'Task "{service_request.title}" completed and paid. Amount: {service_request.final_price} MRU'
+        # ✅ إشعار العامل باستلام الدفع
+        from notifications.utils import notify_payment_sent
+        notify_payment_sent(
+            worker_user=worker,
+            task=service_request,
+            amount=service_request.final_price
         )
         
         return Response({
@@ -602,20 +556,20 @@ def update_task_status(request, pk):
         service_request.cancelled_at = timezone.now()
         service_request.save()
         
+        # ✅ إشعار العامل بالإلغاء
         if service_request.assigned_worker:
-            TaskNotification.objects.create(
-                recipient=service_request.assigned_worker,
-                service_request=service_request,
-                notification_type='task_cancelled',
-                title='Task cancelled',
-                message=f'Task "{service_request.title}" has been cancelled by the client.'
+            from notifications.utils import notify_service_cancelled
+            notify_service_cancelled(
+                client_user=request.user,
+                worker_user=service_request.assigned_worker,
+                task=service_request,
+                reason=""
             )
         
         return Response({'message': 'Task cancelled successfully'})
     
     else:
         raise ValidationError("Invalid status")
-    
 
 class TaskReviewCreateView(generics.CreateAPIView):
     serializer_class = TaskReviewSerializer
