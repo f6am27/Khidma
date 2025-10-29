@@ -2,33 +2,45 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.utils.html import format_html
+from django.urls import reverse
 from .models import User, AdminProfile, WorkerProfile, ClientProfile
 
 
 @admin.register(User)
 class UserAdmin(BaseUserAdmin):
-    """إدارة المستخدمين المخصصة"""
+    """User Management"""
     
     list_display = [
         'display_identifier', 'get_full_name', 'role', 
-        'is_verified', 'onboarding_completed', 'is_active', 'created_at'
+        'status_display', 'is_verified', 'onboarding_completed', 
+        'created_at'
     ]
-    list_filter = ['role', 'is_verified', 'onboarding_completed', 'is_active', 'created_at']
+    list_filter = [
+        'role', 'is_verified', 'onboarding_completed', 
+        'is_active', 'is_suspended', 'created_at'
+    ]
     search_fields = ['phone', 'email', 'first_name', 'last_name']
     ordering = ['-created_at']
     
     fieldsets = (
-        (None, {
+        ('Basic Info', {
             'fields': ('phone', 'email', 'password')
         }),
         ('Personal Info', {
             'fields': ('first_name', 'last_name', 'role')
         }),
         ('Status', {
-            'fields': ('is_verified', 'onboarding_completed', 'is_active', 'is_staff', 'is_superuser')
+            'fields': (
+                'is_verified', 'onboarding_completed', 
+                'is_active', 'is_staff', 'is_superuser'
+            )
+        }),
+        ('Suspension', {
+            'fields': ('is_suspended', 'suspended_until', 'suspension_reason'),
+            'classes': ('collapse',)
         }),
         ('Dates', {
-            'fields': ('last_login', 'date_joined'),
+            'fields': ('last_login', 'date_joined', 'created_at', 'updated_at'),
             'classes': ('collapse',)
         }),
     )
@@ -36,9 +48,14 @@ class UserAdmin(BaseUserAdmin):
     add_fieldsets = (
         (None, {
             'classes': ('wide',),
-            'fields': ('phone', 'email', 'first_name', 'last_name', 'role', 'password1', 'password2'),
+            'fields': (
+                'phone', 'email', 'first_name', 'last_name', 
+                'role', 'password1', 'password2'
+            ),
         }),
     )
+    
+    readonly_fields = ['created_at', 'updated_at', 'date_joined']
     
     def display_identifier(self, obj):
         if obj.role == 'admin':
@@ -49,11 +66,27 @@ class UserAdmin(BaseUserAdmin):
     def get_full_name(self, obj):
         return obj.get_full_name() or 'No Name'
     get_full_name.short_description = 'Full Name'
+    
+    def status_display(self, obj):
+        if obj.is_suspended:
+            if obj.suspended_until:
+                return format_html(
+                    '<span style="color:orange;">Suspended until {}</span>',
+                    obj.suspended_until.strftime('%Y-%m-%d')
+                )
+            return format_html('<span style="color:red;">Permanently Suspended</span>')
+        if not obj.is_active:
+            return format_html('<span style="color:gray;">Inactive</span>')
+        return format_html('<span style="color:green;">Active</span>')
+    status_display.short_description = 'Status'
+    
+    def get_queryset(self, request):
+        return super().get_queryset(request)
 
 
 @admin.register(AdminProfile)
 class AdminProfileAdmin(admin.ModelAdmin):
-    """إدارة ملفات الأدمن"""
+    """Admin Profile Management"""
     
     list_display = [
         'display_name', 'user_email', 'department', 
@@ -64,21 +97,32 @@ class AdminProfileAdmin(admin.ModelAdmin):
     ordering = ['-created_at']
     
     fieldsets = (
-        ('Basic Info', {
-            'fields': ('user', 'display_name', 'bio')
+        ('User', {
+            'fields': ('user',)
         }),
-        ('Profile', {
-            'fields': ('profile_image', 'department')
+        ('Profile Info', {
+            'fields': ('display_name', 'bio', 'department')
+        }),
+        ('Media', {
+            'fields': ('profile_image',)
         }),
         ('Status', {
             'fields': ('is_active_admin', 'last_login_dashboard')
         }),
+        ('Dates', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
     )
     
+    readonly_fields = ['created_at', 'updated_at']
+    
     def user_email(self, obj):
-        return obj.user.email
+        return obj.user.email if obj.user.email else 'No Email'
     user_email.short_description = 'Email'
-
+    
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('user')
 
 @admin.register(WorkerProfile)
 class WorkerProfileAdmin(admin.ModelAdmin):
@@ -147,49 +191,27 @@ class WorkerProfileAdmin(admin.ModelAdmin):
     worker_name.short_description = 'Worker Name'
     
     def status_badges(self, obj):
-
         """عرض حالات العامل"""
-
         badges = []
-
         
-
         # Online Status
-
         if obj.is_online:
-
             badges.append('🟢')
-
         else:
-
             badges.append('⚫')
-
         
-
         # Location Sharing
-
         if obj.location_sharing_enabled and obj.location_status == 'active':
-
             badges.append('📍')
-
         else:
-
             badges.append('📍❌')
-
         
-
         # Available
-
         if obj.is_available:
-
             badges.append('✅')
-
         
-
         return ' '.join(badges)
-
     status_badges.short_description = 'Status'
-
 
     def location_info(self, obj):
         """معلومات الموقع الحالي"""
@@ -197,14 +219,13 @@ class WorkerProfileAdmin(admin.ModelAdmin):
             last_update = obj.location_last_updated.strftime('%H:%M %d/%m') if obj.location_last_updated else 'N/A'
             accuracy = f"{float(obj.location_accuracy):.1f}m" if obj.location_accuracy else 'N/A'
             
-            # ✅ التحويل إلى string مباشرة بدون format
-            lat_str = str(obj.current_latitude)[:9]  # أول 9 أرقام
+            lat_str = str(obj.current_latitude)[:9]
             lng_str = str(obj.current_longitude)[:9]
             
             return format_html(
                 '<div style="font-size:11px;">'
-                '<strong>Lat:</strong> {}<br>'  # ✅ بدون format
-                '<strong>Lng:</strong> {}<br>'  # ✅ بدون format
+                '<strong>Lat:</strong> {}<br>'
+                '<strong>Lng:</strong> {}<br>'
                 '<strong>Accuracy:</strong> {}<br>'
                 '<strong>Updated:</strong> {}'
                 '</div>',
@@ -218,16 +239,14 @@ class WorkerProfileAdmin(admin.ModelAdmin):
     
     def get_queryset(self, request):
         return super().get_queryset(request).select_related('user')
-
-
+    
 @admin.register(ClientProfile)
 class ClientProfileAdmin(admin.ModelAdmin):
-    """إدارة ملفات العملاء"""
+    """Client Profile Management"""
     
     list_display = [
-        'client_name', 'user_phone', 'address_short', 
-        'total_tasks_published', 'total_tasks_completed', 
-        'success_rate_display', 'total_amount_spent', 'created_at'
+        'client_name', 'client_phone', 'gender', 'address_short',
+        'favorites_count', 'created_at'
     ]
     list_filter = ['gender', 'notifications_enabled', 'created_at']
     search_fields = [
@@ -240,48 +259,55 @@ class ClientProfileAdmin(admin.ModelAdmin):
             'fields': ('user',)
         }),
         ('Personal Info', {
-            'fields': ('gender',)
+            'fields': ('gender', 'address', 'emergency_contact')
         }),
-        ('Contact Info', {
-            'fields': ('address', 'emergency_contact')
-        }),
-        ('Profile', {
+        ('Media', {
             'fields': ('profile_image',)
         }),
         ('Statistics', {
-            'fields': ('total_tasks_published', 'total_tasks_completed', 'total_amount_spent'),
-            'classes': ('collapse',)
+            'fields': (
+                'total_tasks_published', 
+                'total_tasks_completed', 
+                'total_amount_spent'
+            )
         }),
-        ('Preferences', {
-            'fields': ('notifications_enabled',),
+        ('Settings', {
+            'fields': ('notifications_enabled',)
+        }),
+        ('Dates', {
+            'fields': ('created_at', 'updated_at'),
             'classes': ('collapse',)
         }),
     )
     
-    readonly_fields = ['total_tasks_published', 'total_tasks_completed', 'total_amount_spent']
+    readonly_fields = [
+        'total_tasks_published', 'total_tasks_completed', 
+        'total_amount_spent', 'created_at', 'updated_at'
+    ]
     
     def client_name(self, obj):
-        return obj.user.get_full_name() or obj.user.phone
-    client_name.short_description = 'Client Name'
+        return obj.user.get_full_name() or 'No Name'
+    client_name.short_description = 'Name'
     
-    def user_phone(self, obj):
-        return obj.user.phone
-    user_phone.short_description = 'Phone'
+    def client_phone(self, obj):
+        return obj.user.phone or 'No Phone'
+    client_phone.short_description = 'Phone'
     
     def address_short(self, obj):
         if obj.address:
-            return obj.address[:50] + '...' if len(obj.address) > 50 else obj.address
+            return obj.address[:40] + '...' if len(obj.address) > 40 else obj.address
         return 'No Address'
     address_short.short_description = 'Address'
     
-    def success_rate_display(self, obj):
-        rate = obj.success_rate
-        color = 'green' if rate >= 80 else 'orange' if rate >= 50 else 'red'
-        return format_html(
-            '<span style="color: {};">{:.1f}%</span>',
-            color, rate
-        )
-    success_rate_display.short_description = 'Success Rate'
+    def favorites_count(self, obj):
+        """عدد العمال المفضلين"""
+        from clients.models import FavoriteWorker
+        count = FavoriteWorker.objects.filter(client=obj.user).count()
+        if count > 0:
+            url = reverse('admin:clients_favoriteworker_changelist') + f'?client__id__exact={obj.user.id}'
+            return format_html('<a href="{}">{} workers</a>', url, count)
+        return '0'
+    favorites_count.short_description = 'Favorites'
     
     def get_queryset(self, request):
         return super().get_queryset(request).select_related('user')
