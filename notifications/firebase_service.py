@@ -157,17 +157,20 @@ class FirebaseNotificationService:
                 )
             )
             
-            # إنشاء رسالة متعددة المستلمين
-            message = messaging.MulticastMessage(
-                notification=notification,
-                data=data or {},
-                tokens=tokens,
-                android=android_config,
-                apns=apns_config
-            )
+            # ✅ إنشاء رسائل منفصلة لكل token (بدلاً من multicast)
+            messages = []
+            for token in tokens:
+                message = messaging.Message(
+                    notification=notification,
+                    data=data or {},
+                    token=token,
+                    android=android_config,
+                    apns=apns_config
+                )
+                messages.append(message)
             
-            # إرسال لعدة أجهزة
-            response = messaging.send_multicast(message)
+            # ✅ إرسال جميع الرسائل دفعة واحدة (FCM v1 compatible)
+            response = messaging.send_each(messages)
             
             # تحليل النتائج
             successful_tokens = []
@@ -193,7 +196,7 @@ class FirebaseNotificationService:
                         'error': error_code
                     })
             
-            logger.info(f"Multicast sent: {response.success_count}/{len(tokens)} successful")
+            logger.info(f"Batch sent: {response.success_count}/{len(tokens)} successful")
             
             return {
                 'success': True,
@@ -204,7 +207,7 @@ class FirebaseNotificationService:
             }
             
         except Exception as e:
-            logger.error(f"Failed to send multicast notification: {str(e)}")
+            logger.error(f"Failed to send batch notification: {str(e)}")
             return {'success': False, 'error': str(e)}
     
     @classmethod

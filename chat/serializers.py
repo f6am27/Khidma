@@ -182,7 +182,6 @@ class SendMessageSerializer(serializers.ModelSerializer):
         
         return value.strip()
 
-
 class ReportSerializer(serializers.ModelSerializer):
     """
     محول التبليغات

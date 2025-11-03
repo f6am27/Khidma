@@ -134,11 +134,75 @@ class LoginView(APIView):
         # المستخدم تم التحقق منه في serializer
         user = serializer.validated_data['user']
         
+        # ✅ فحص حالة التعليق
+        if user.is_suspended:
+            from django.utils import timezone
+            
+            if user.suspended_until:
+                # تعليق مؤقت
+                now = timezone.now()
+                if now < user.suspended_until:
+                    # الحساب لا يزال معلقاً
+                    time_remaining = user.suspended_until - now
+                    days_remaining = time_remaining.days
+                    hours_remaining = time_remaining.seconds // 3600
+                    jour_text = "jour" if days_remaining <= 1 else "jours"
+                    heure_text = "heure" if hours_remaining <= 1 else "heures"
+                    suspension_message = (
+                        f"Votre compte est temporairement suspendu jusqu'au {user.suspended_until.strftime('%d/%m/%Y à %H:%M')}.\n"
+                        f"Temps restant : {days_remaining} {jour_text} et {hours_remaining} {heure_text}.\n"
+                        f"Pour toute question, contactez le support : khidma.helpp@gmail.com"
+                    )
+                    
+                    return Response({
+                        "code": "account_suspended",
+                        "detail": suspension_message,
+                        "suspended_until": user.suspended_until.isoformat(),
+                        "days_remaining": days_remaining,
+                        "hours_remaining": hours_remaining,
+                        "support_email": "khidma.helpp@gmail.com"
+                    }, status=status.HTTP_403_FORBIDDEN)
+                else:
+                    # انتهى وقت التعليق - إعادة التفعيل تلقائياً
+                    user.is_suspended = False
+                    # user.is_active = True
+                    user.suspended_until = None
+                    user.suspension_reason = ''
+                    user.save(update_fields=['is_suspended', 'suspended_until', 'suspension_reason'])
+            else:
+                # تعليق نهائي (permanent ban)
+                return Response({
+                    "code": "account_permanently_suspended",
+                    "detail": (
+                        "تم إيقاف حسابك نهائياً.\n"
+                        "للاستفسار، تواصل مع الدعم الفني: khidma.helpp@gmail.com"
+                    ),
+                    "support_email": "khidma.helpp@gmail.com"
+                }, status=status.HTTP_403_FORBIDDEN)
+        
         # ✅ تحديث is_online و is_available عند تسجيل الدخول
         if user.is_worker and hasattr(user, 'worker_profile'):
             user.worker_profile.is_online = True
-            user.worker_profile.is_available = True  # ✅ جديد
-            user.worker_profile.save(update_fields=['is_online', 'is_available'])
+            user.worker_profile.is_available = True
+            user.worker_profile.location_sharing_enabled = True
+            user.worker_profile.save(update_fields=['is_online', 'is_available','location_sharing_enabled'])
+        
+        # ✅ حفظ Device Token
+        device_token = request.data.get('device_token')
+        device_name = request.data.get('device_name', 'Unknown Device')
+        platform = request.data.get('platform', 'unknown')
+        
+        if device_token:
+            from notifications.models import DeviceToken
+            DeviceToken.objects.update_or_create(
+                user=user,
+                token=device_token,
+                defaults={
+                    'device_name': device_name,
+                    'platform': platform,
+                    'is_active': True
+                }
+            )
         
         # إنشاء JWT tokens
         refresh = RefreshToken.for_user(user)

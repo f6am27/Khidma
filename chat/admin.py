@@ -1,8 +1,9 @@
-# chat/admin.py - النسخة البسيطة المحسنة
+# chat/admin.py - النسخة الصحيحة المعدلة
 from django.contrib import admin
 from django.utils.html import format_html
 from django.utils import timezone
 from django.db.models import Count
+from datetime import timedelta
 from .models import Conversation, Message, BlockedUser, Report
 
 
@@ -11,8 +12,8 @@ class ConversationAdmin(admin.ModelAdmin):
     """إدارة المحادثات"""
     list_display = [
         'id', 'client_info', 'worker_info', 'total_messages',
-        'is_active', 'deleted_by_client', 'deleted_by_worker',  # ✅ أضف هذا
-    'deleted_at_display', 'last_message_at', 'created_at'
+        'is_active', 'deleted_by_client', 'deleted_by_worker',
+        'deleted_at_display', 'last_message_at', 'created_at'
     ]
     list_filter = ['is_active', 'created_at', 'last_message_at']
     search_fields = [
@@ -106,12 +107,6 @@ class MessageAdmin(admin.ModelAdmin):
         ('État', {
             'fields': ('is_read', 'read_at')
         }),
-            ('Suppression', {  
-        'fields': (
-            'deleted_by_client', 'deleted_at_by_client',
-            'deleted_by_worker', 'deleted_at_by_worker'
-        )
-        }),
         ('Dates', {
             'fields': ('created_at', 'updated_at'),
             'classes': ('collapse',)
@@ -200,32 +195,28 @@ class BlockedUserAdmin(admin.ModelAdmin):
 
 @admin.register(Report)
 class ReportAdmin(admin.ModelAdmin):
-    """
-    إدارة التبليغات
-    Reports admin
-    """
+    """إدارة التبليغات"""
     list_display = [
         'id', 
         'reporter_info', 
-        'reported_user_info_with_count',  # ✅ عداد البلاغات
+        'reported_user_info_with_count',
         'reason',
         'status', 
         'created_at', 
         'resolved_at'
     ]
     
-    # ✅ 1. فلاتر متقدمة للبحث السريع
     list_filter = [
-        'status',          # حسب الحالة
-        'reason',          # حسب السبب
-        'created_at',      # حسب التاريخ
-        'resolved_at',     # حسب تاريخ الحل
-        ('reporter', admin.RelatedOnlyFieldListFilter),      # حسب المُبلغ
-        ('reported_user', admin.RelatedOnlyFieldListFilter), # حسب المُبلغ عنه
+        'status',
+        'reason',
+        'created_at',
+        'resolved_at',
+        ('reporter', admin.RelatedOnlyFieldListFilter),
+        ('reported_user', admin.RelatedOnlyFieldListFilter),
     ]
     
     search_fields = [
-        'id',  # البحث برقم البلاغ
+        'id',
         'reporter__username', 
         'reported_user__username',
         'description', 
@@ -235,12 +226,13 @@ class ReportAdmin(admin.ModelAdmin):
     readonly_fields = ['reporter', 'reported_user', 'created_at', 'updated_at']
     ordering = ['-created_at']
     
-    # ✅ 3. أكشن القرارات
     actions = [
-        'mark_as_resolved',           # تم حل المشكلة
-        'mark_as_dismissed',          # رفض البلاغ
-        'suspend_user_3days',         # توقيف 3 أيام
-        'deactivate_account',         # إيقاف الحساب نهائياً
+        'mark_as_resolved',
+        'mark_as_dismissed',
+        'suspend_user_3days',
+        'suspend_user_7days',
+        'suspend_user_30days',
+        'permanent_ban',
     ]
     
     fieldsets = (
@@ -269,13 +261,11 @@ class ReportAdmin(admin.ModelAdmin):
         )
     reporter_info.short_description = 'Rapporteur'
     
-    # ✅ 2. عداد البلاغات المتكررة
     def reported_user_info_with_count(self, obj):
         """معلومات المُبلَّغ عنه مع عداد البلاغات"""
         name = obj.reported_user.get_full_name() or obj.reported_user.username
         role_badge = "👤" if obj.reported_user.role == 'client' else "🔧"
         
-        # حساب عدد البلاغات
         total_reports = Report.objects.filter(
             reported_user=obj.reported_user
         ).count()
@@ -285,7 +275,6 @@ class ReportAdmin(admin.ModelAdmin):
             status='resolved'
         ).count()
         
-        # تحديد اللون حسب عدد البلاغات
         if total_reports >= 3:
             color = 'red'
             icon = '🚨'
@@ -307,7 +296,7 @@ class ReportAdmin(admin.ModelAdmin):
         )
     reported_user_info_with_count.short_description = 'Utilisateur signalé'
     
-    # ============= ACTIONS - القرارات =============
+    # ============= ACTIONS =============
     
     def mark_as_resolved(self, request, queryset):
         """✅ تم حل المشكلة"""
@@ -316,93 +305,110 @@ class ReportAdmin(admin.ModelAdmin):
             resolved_at=timezone.now(),
             resolved_by=request.user
         )
-        
-        # 🔔 إشعار: يجب إرسال إشعار للمُبلغ
-        # TODO: أرسل إشعار للمُبلغ بأن المشكلة تم حلها
-        
-        self.message_user(
-            request,
-            f'✅ تم تحديد {updated} بلاغ كمحلول'
-        )
+        self.message_user(request, f'✅ تم تحديد {updated} بلاغ كمحلول')
     mark_as_resolved.short_description = "✅ تم حل المشكلة"
     
     def mark_as_dismissed(self, request, queryset):
-        """❌ رفض البلاغ (بلاغ كاذب)"""
+        """❌ رفض البلاغ"""
         updated = queryset.filter(status__in=['pending', 'under_review']).update(
             status='dismissed',
             resolved_at=timezone.now(),
             resolved_by=request.user
         )
-        
-        # 🔔 إشعار: يمكن إرسال إشعار للمُبلغ
-        
-        self.message_user(
-            request,
-            f'❌ تم رفض {updated} بلاغ'
-        )
-    mark_as_dismissed.short_description = "❌ رفض البلاغ (كاذب)"
+        self.message_user(request, f'❌ تم رفض {updated} بلاغ')
+    mark_as_dismissed.short_description = "❌ رفض البلاغ"
     
     def suspend_user_3days(self, request, queryset):
-        """⏸️ توقيف المستخدم لمدة 3 أيام"""
-        from datetime import timedelta
-        
+        """⏸️ تعليق 3 أيام"""
         count = 0
         for report in queryset:
             user = report.reported_user
             
-            # ✅ تعطيل الحساب مع تحديد تاريخ إعادة التفعيل
-            user.is_active = False
             user.is_suspended = True
+            # user.is_active = False
             user.suspended_until = timezone.now() + timedelta(days=3)
-            user.suspension_reason = f"بلاغ #{report.id}: {report.get_reason_display()}"
-            user.save()
+            user.suspension_reason = f"تعليق 3 أيام - بلاغ #{report.id}"
+            user.save(update_fields=['is_suspended', 'is_active', 'suspended_until', 'suspension_reason'])
             
             report.status = 'resolved'
             report.resolved_at = timezone.now()
             report.resolved_by = request.user
-            report.admin_notes = f"تم توقيف الحساب لمدة 3 أيام حتى {user.suspended_until.strftime('%Y-%m-%d %H:%M')} بواسطة {request.user.username}"
-            report.save()
-            
-            # 🔔 إشعار: يجب إرسال إشعار للمُبلغ عنه
-            # TODO: أرسل إشعار للمُبلغ عنه بالتوقيف
+            report.admin_notes = f"تعليق 3 أيام حتى {user.suspended_until.strftime('%Y-%m-%d %H:%M')}"
+            report.save(update_fields=['status', 'resolved_at', 'resolved_by', 'admin_notes'])
             
             count += 1
         
-        self.message_user(
-            request,
-            f'⏸️ تم توقيف {count} حساب لمدة 3 أيام (سيتم إعادة التفعيل تلقائياً)'
-        )
-    suspend_user_3days.short_description = "⏸️ توقيف 3 أيام"
+        self.message_user(request, f"✅ تم تعليق {count} مستخدم لمدة 3 أيام")
+    suspend_user_3days.short_description = "⏸️ تعليق 3 أيام"
     
-    def deactivate_account(self, request, queryset):
-        """🚫 إيقاف الحساب نهائياً"""
+    def suspend_user_7days(self, request, queryset):
+        """⏸️ تعليق 7 أيام"""
         count = 0
         for report in queryset:
             user = report.reported_user
             
-            # ✅ إيقاف نهائي بدون تاريخ إعادة تفعيل
-            user.is_active = False
             user.is_suspended = True
-            user.suspended_until = None  # لا يوجد تاريخ = إيقاف نهائي
-            user.suspension_reason = f"إيقاف نهائي - بلاغ #{report.id}: {report.get_reason_display()}"
-            user.save()
+            # user.is_active = False
+            user.suspended_until = timezone.now() + timedelta(days=7)
+            user.suspension_reason = f"تعليق 7 أيام - بلاغ #{report.id}"
+            user.save(update_fields=['is_suspended', 'is_active', 'suspended_until', 'suspension_reason'])
             
             report.status = 'resolved'
             report.resolved_at = timezone.now()
             report.resolved_by = request.user
-            report.admin_notes = f"تم إيقاف الحساب نهائياً بواسطة {request.user.username}"
-            report.save()
-            
-            # 🔔 إشعار: يجب إرسال إشعار للمُبلغ عنه
-            # TODO: أرسل إشعار للمُبلغ عنه بالإيقاف النهائي
+            report.admin_notes = f"تعليق 7 أيام حتى {user.suspended_until.strftime('%Y-%m-%d %H:%M')}"
+            report.save(update_fields=['status', 'resolved_at', 'resolved_by', 'admin_notes'])
             
             count += 1
         
-        self.message_user(
-            request,
-            f'🚫 تم إيقاف {count} حساب نهائياً'
-        )
-    deactivate_account.short_description = "🚫 إيقاف الحساب نهائياً"
+        self.message_user(request, f"✅ تم تعليق {count} مستخدم لمدة 7 أيام")
+    suspend_user_7days.short_description = "⏸️ تعليق 7 أيام"
+    
+    def suspend_user_30days(self, request, queryset):
+        """⏸️ تعليق 30 يوم"""
+        count = 0
+        for report in queryset:
+            user = report.reported_user
+            
+            user.is_suspended = True
+            # user.is_active = False
+            user.suspended_until = timezone.now() + timedelta(days=30)
+            user.suspension_reason = f"تعليق 30 يوم - بلاغ #{report.id}"
+            user.save(update_fields=['is_suspended', 'is_active', 'suspended_until', 'suspension_reason'])
+            
+            report.status = 'resolved'
+            report.resolved_at = timezone.now()
+            report.resolved_by = request.user
+            report.admin_notes = f"تعليق 30 يوم حتى {user.suspended_until.strftime('%Y-%m-%d %H:%M')}"
+            report.save(update_fields=['status', 'resolved_at', 'resolved_by', 'admin_notes'])
+            
+            count += 1
+        
+        self.message_user(request, f"✅ تم تعليق {count} مستخدم لمدة 30 يوم")
+    suspend_user_30days.short_description = "⏸️ تعليق 30 يوم"
+    
+    def permanent_ban(self, request, queryset):
+        """🚫 حظر نهائي"""
+        count = 0
+        for report in queryset:
+            user = report.reported_user
+            
+            user.is_suspended = True
+            user.is_active = False
+            user.suspended_until = None
+            user.suspension_reason = f"حظر نهائي - بلاغ #{report.id}"
+            user.save(update_fields=['is_suspended', 'is_active', 'suspended_until', 'suspension_reason'])
+            
+            report.status = 'resolved'
+            report.resolved_at = timezone.now()
+            report.resolved_by = request.user
+            report.admin_notes = "تم حظر الحساب نهائياً"
+            report.save(update_fields=['status', 'resolved_at', 'resolved_by', 'admin_notes'])
+            
+            count += 1
+        
+        self.message_user(request, f'🚫 تم حظر {count} مستخدم نهائياً', level='WARNING')
+    permanent_ban.short_description = "🚫 حظر نهائي"
     
     def get_queryset(self, request):
         return super().get_queryset(request).select_related(

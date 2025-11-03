@@ -88,8 +88,11 @@ class LoginSerializer(serializers.Serializer):
         if not user.check_password(password):
             raise serializers.ValidationError("Invalid credentials")
 
-        if not user.is_active:
+        # ✅✅✅ التعديل هنا ✅✅✅
+        # السماح للحسابات المعلقة بالمرور - سيتم الفحص في LoginView
+        if not user.is_active and not user.is_suspended:
             raise serializers.ValidationError("User account is disabled")
+        # ✅✅✅ نهاية التعديل ✅✅✅
 
         attrs['user'] = user
         return attrs

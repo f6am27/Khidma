@@ -53,7 +53,22 @@ class PaymentListCreateView(generics.ListCreateAPIView):
         """Create payment from task completion"""
         payment = serializer.save()
         print(f'✅ Payment created: {payment.id} - Amount: {payment.amount}')
-
+        
+        # ✅ إشعار العميل بالدفع
+        from notifications.utils import notify_payment_received
+        notify_payment_received(
+            client_user=payment.payer,
+            task=payment.task,
+            amount=payment.amount
+        )
+        
+        # ✅ إشعار العامل باستلام الدفع
+        from notifications.utils import notify_payment_sent
+        notify_payment_sent(
+            worker_user=payment.receiver,
+            task=payment.task,
+            amount=payment.amount
+        )
 
 class PaymentDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
@@ -76,10 +91,26 @@ class PaymentDetailView(generics.RetrieveUpdateDestroyAPIView):
     def perform_update(self, serializer):
         """Update payment status"""
         payment = serializer.save()
+        
         if payment.status == 'completed':
             print(f'✅ Payment {payment.id} completed')
-
-
+            
+            # ✅ إشعار العميل بإتمام الدفع
+            from notifications.utils import notify_payment_received
+            notify_payment_received(
+                client_user=payment.payer,
+                task=payment.task,
+                amount=payment.amount
+            )
+            
+            # ✅ إشعار العامل باستلام الدفع
+            from notifications.utils import notify_payment_sent
+            notify_payment_sent(
+                worker_user=payment.receiver,
+                task=payment.task,
+                amount=payment.amount
+            )
+            
 class MyPaymentsView(generics.ListAPIView):
     """
     Get my payments (made or received)
