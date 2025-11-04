@@ -22,6 +22,13 @@ class ServiceCategory(models.Model):
 
     def __str__(self):
         return self.name
+    
+    def save(self, *args, **kwargs):
+        if not self.pk and self.order == 0:
+            # حساب آخر order تلقائياً
+            max_order = ServiceCategory.objects.aggregate(models.Max('order'))['order__max']
+            self.order = (max_order or 0) + 1
+        super().save(*args, **kwargs)
 
 
 class NouakchottArea(models.Model):
@@ -53,3 +60,10 @@ class NouakchottArea(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.get_area_type_display()})"
+    
+    def save(self, *args, **kwargs):
+        if not self.pk and self.order == 0:
+            # حساب آخر order تلقائياً
+            max_order = NouakchottArea.objects.aggregate(models.Max('order'))['order__max']
+            self.order = (max_order or 0) + 1
+        super().save(*args, **kwargs)
