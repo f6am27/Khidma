@@ -53,6 +53,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'users.middleware.ReactivateMiddleware',  
+    'users.middleware.PaymentCheckMiddleware',
 
 ]
 
@@ -268,4 +269,13 @@ GLOBAL_OTP_RATE_LIMIT = {
     'MAX_ATTEMPTS_PER_IP_PER_HOUR': 20,     # 20 محاولة من نفس الـ IP
     'BLOCK_DURATION_MINUTES': 60,           # مدة المنع بالدقائق
 }
+
+# ==================== Email Configuration ====================
+EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
+EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True') == 'True'
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', f'Khidma Admin <{EMAIL_HOST_USER}>')
 

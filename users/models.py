@@ -185,6 +185,16 @@ class AdminProfile(models.Model):
         default=True,
         help_text="أدمن نشط"
     )
+
+    is_online = models.BooleanField(
+        default=False,
+        help_text="هل الأدمن متصل حالياً"
+    )
+    last_activity = models.DateTimeField(
+        auto_now=True,
+        help_text="آخر نشاط للأدمن"
+    )
+
     last_login_dashboard = models.DateTimeField(
         null=True, blank=True,
         help_text="آخر دخول للوحة التحكم"
@@ -201,8 +211,24 @@ class AdminProfile(models.Model):
     
     def __str__(self):
         return f"Admin: {self.display_name} ({self.user.email})"
-
-
+    
+    # ✅ Methods للتحكم بحالة الاتصال
+    def set_online(self):
+        """تعيين الأدمن كمتصل"""
+        self.is_online = True
+        self.last_activity = timezone.now()
+        self.save(update_fields=['is_online', 'last_activity'])
+    
+    def set_offline(self):
+        """تعيين الأدمن كغير متصل"""
+        self.is_online = False
+        self.save(update_fields=['is_online'])
+    
+    def update_activity(self):
+        """تحديث آخر نشاط للأدمن"""
+        self.last_activity = timezone.now()
+        self.save(update_fields=['last_activity'])
+        
 class WorkerProfile(models.Model):
     """
     Worker Profile - إجباري للعمال

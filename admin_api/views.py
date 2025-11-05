@@ -7,13 +7,22 @@ from django.db.models import Count, Sum, Avg, Q
 from django.utils import timezone
 from datetime import timedelta
 from django.shortcuts import get_object_or_404
-
-from users.models import User, WorkerProfile, ClientProfile
+from users.models import User, WorkerProfile, ClientProfile,AdminProfile
 from tasks.models import ServiceRequest, TaskApplication, TaskReview
 from payments.models import Payment
 from chat.models import Report, Conversation, Message
 from services.models import ServiceCategory, NouakchottArea
+from notifications.models import Notification
+from notifications.serializers import NotificationListSerializer
 
+
+from .email_service import (
+    generate_otp, 
+    send_password_reset_email, 
+    store_otp, 
+    verify_otp, 
+    clear_otp
+)
 from .serializers import (
     DashboardStatsSerializer,
     AdminUserListSerializer,
@@ -23,7 +32,12 @@ from .serializers import (
     ReportActionSerializer,
     AdminCategorySerializer,
     AdminAreaSerializer,
-    FinancialSummarySerializer
+    FinancialSummarySerializer,
+    AdminProfileUpdateSerializer,
+    AdminProfileSerializer,
+    AdminChangePasswordSerializer,
+    AdminPasswordResetRequestSerializer,
+    AdminPasswordResetConfirmSerializer
 )
 
 
@@ -41,13 +55,9 @@ class AdminLoginView(APIView):
                 'error': 'Email and password required'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # ابحث عن أي admin أو superuser
         try:
-            user = User.objects.get(
-                email=email
-            )
+            user = User.objects.get(email=email)
             
-            # تحقق أنه admin أو superuser
             if user.role != 'admin' and not user.is_superuser:
                 return Response({
                     'error': 'Invalid credentials'
@@ -68,6 +78,12 @@ class AdminLoginView(APIView):
                 'error': 'Account is disabled'
             }, status=status.HTTP_403_FORBIDDEN)
         
+        # ✅ تعيين الأدمن كمتصل
+        admin_profile, created = AdminProfile.objects.get_or_create(user=user)
+        admin_profile.set_online()
+        admin_profile.last_login_dashboard = timezone.now()
+        admin_profile.save(update_fields=['last_login_dashboard'])
+        
         # Create JWT tokens
         from rest_framework_simplejwt.tokens import RefreshToken
         refresh = RefreshToken.for_user(user)
@@ -80,10 +96,10 @@ class AdminLoginView(APIView):
                 'email': user.email,
                 'first_name': user.first_name,
                 'last_name': user.last_name,
-                'role': getattr(user, 'role', 'admin')
+                'role': getattr(user, 'role', 'admin'),
+                'is_online': admin_profile.is_online,  # ✅ أضف
             }
         })
-
 
 # ==================== Dashboard Statistics ====================
 @api_view(['GET'])
@@ -463,3 +479,419 @@ def financial_summary(request):
     
     serializer = FinancialSummarySerializer(data)
     return Response(serializer.data)
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAdminUser])
+def admin_logout(request):
+    """
+    تسجيل خروج الأدمن
+    POST /api/admin/logout/
+    """
+    user = request.user
+    
+    if user.role == 'admin' and hasattr(user, 'admin_profile'):
+        user.admin_profile.set_offline()
+    
+    return Response({
+        'success': True,
+        'message': 'تم تسجيل الخروج بنجاح'
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAdminUser])
+def admin_heartbeat(request):
+    """
+    Heartbeat للحفاظ على حالة الاتصال
+    POST /api/admin/heartbeat/
+    """
+    user = request.user
+    
+    if user.role == 'admin':
+        admin_profile, created = AdminProfile.objects.get_or_create(user=user)
+        
+        if not admin_profile.is_online:
+            admin_profile.set_online()
+        else:
+            admin_profile.update_activity()
+        
+        return Response({
+            'success': True,
+            'is_online': admin_profile.is_online,
+            'last_activity': admin_profile.last_activity.isoformat()
+        }, status=status.HTTP_200_OK)
+    
+    return Response({
+        'error': 'Not an admin'
+    }, status=status.HTTP_403_FORBIDDEN)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAdminUser])
+def admin_status(request):
+    """
+    الحصول على حالة الأدمن
+    GET /api/admin/status/
+    """
+    user = request.user
+    
+    if user.role == 'admin':
+        admin_profile, created = AdminProfile.objects.get_or_create(user=user)
+        
+        return Response({
+            'success': True,
+            'data': {
+                'is_online': admin_profile.is_online,
+                'last_activity': admin_profile.last_activity.isoformat() if admin_profile.last_activity else None,
+                'last_login_dashboard': admin_profile.last_login_dashboard.isoformat() if admin_profile.last_login_dashboard else None,
+            }
+        }, status=status.HTTP_200_OK)
+    
+    return Response({
+        'error': 'Not an admin'
+    }, status=status.HTTP_403_FORBIDDEN)
+
+
+
+@api_view(['GET', 'PUT'])
+@permission_classes([permissions.IsAdminUser])
+def admin_profile(request):
+    """
+    جلب أو تحديث بيانات الأدمن
+    GET /api/admin/profile/
+    PUT /api/admin/profile/
+    """
+    user = request.user
+    
+    if user.role != 'admin':
+        return Response({
+            'success': False,
+            'error': 'Non autorisé'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    if request.method == 'GET':
+        # جلب البيانات
+        serializer = AdminProfileSerializer(user, context={'request': request})
+        
+        # إضافة بيانات AdminProfile إذا كانت موجودة
+        data = serializer.data
+        if hasattr(user, 'admin_profile'):
+            profile = user.admin_profile
+            data['display_name'] = profile.display_name
+            data['bio'] = profile.bio
+            data['department'] = profile.department
+            data['is_online'] = profile.is_online
+            data['last_activity'] = profile.last_activity.isoformat() if profile.last_activity else None
+        
+        return Response({
+            'success': True,
+            'data': data
+        }, status=status.HTTP_200_OK)
+    
+    elif request.method == 'PUT':
+        # تحديث البيانات
+        serializer = AdminProfileUpdateSerializer(
+            user, 
+            data=request.data, 
+            partial=True,  # السماح بتحديث جزئي
+            context={'request': request}
+        )
+        
+        if serializer.is_valid():
+            serializer.save()
+            
+            # إرجاع البيانات المحدثة
+            response_serializer = AdminProfileSerializer(user, context={'request': request})
+            response_data = response_serializer.data
+            
+            if hasattr(user, 'admin_profile'):
+                profile = user.admin_profile
+                response_data['display_name'] = profile.display_name
+                response_data['bio'] = profile.bio
+                response_data['department'] = profile.department
+            
+            # تحديث localStorage في الفرونت
+            return Response({
+                'success': True,
+                'message': 'Profil mis à jour avec succès',
+                'data': response_data
+            }, status=status.HTTP_200_OK)
+        
+        return Response({
+            'success': False,
+            'errors': serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAdminUser])
+def admin_change_password(request):
+    """
+    تغيير كلمة مرور الأدمن
+    POST /api/admin/change-password/
+    
+    Body:
+    {
+        "old_password": "...",
+        "new_password": "...",
+        "new_password_confirm": "..."
+    }
+    """
+    user = request.user
+    
+    # التحقق من أن المستخدم أدمن
+    if user.role != 'admin':
+        return Response({
+            'success': False,
+            'error': 'Non autorisé'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    serializer = AdminChangePasswordSerializer(
+        data=request.data,
+        context={'request': request}
+    )
+    
+    if not serializer.is_valid():
+        return Response({
+            'success': False,
+            'errors': serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # تغيير كلمة المرور
+    user.set_password(serializer.validated_data['new_password'])
+    user.save()
+    
+    return Response({
+        'success': True,
+        'message': 'Mot de passe mis à jour avec succès'
+    }, status=status.HTTP_200_OK)
+
+
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def admin_password_reset_request(request):
+    """
+    طلب إعادة تعيين كلمة المرور
+    POST /api/admin/password-reset-request/
+    
+    Body: { "email": "...", "language": "fr" }
+    """
+    serializer = AdminPasswordResetRequestSerializer(data=request.data)
+    
+    if not serializer.is_valid():
+        return Response({
+            'success': False,
+            'errors': serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    email = serializer.validated_data['email']
+    language = serializer.validated_data.get('language', 'fr')
+    
+    # توليد OTP
+    otp = generate_otp()
+    
+    # حفظ في cache
+    store_otp(email, otp)
+    
+    # إرسال عبر Email
+    email_sent = send_password_reset_email(email, otp, language)
+    
+    if not email_sent:
+        return Response({
+            'success': False,
+            'error': 'Erreur lors de l\'envoi de l\'email'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    return Response({
+        'success': True,
+        'message': 'Code de vérification envoyé à votre email'
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def admin_password_reset_confirm(request):
+    """
+    تأكيد إعادة التعيين وتغيير كلمة المرور
+    POST /api/admin/password-reset-confirm/
+    
+    Body: {
+        "email": "...",
+        "otp": "123456",
+        "new_password": "...",
+        "new_password_confirm": "..."
+    }
+    """
+    serializer = AdminPasswordResetConfirmSerializer(data=request.data)
+    
+    if not serializer.is_valid():
+        return Response({
+            'success': False,
+            'errors': serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    email = serializer.validated_data['email']
+    otp = serializer.validated_data['otp']
+    new_password = serializer.validated_data['new_password']
+    
+    # التحقق من OTP
+    valid, message = verify_otp(email, otp)
+    
+    if not valid:
+        return Response({
+            'success': False,
+            'error': message
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # تحديث كلمة المرور
+    try:
+        user = User.objects.get(email=email, role='admin')
+        user.set_password(new_password)
+        user.save()
+        
+        # حذف OTP
+        clear_otp(email)
+        
+        return Response({
+            'success': True,
+            'message': 'Mot de passe réinitialisé avec succès'
+        }, status=status.HTTP_200_OK)
+        
+    except User.DoesNotExist:
+        return Response({
+            'success': False,
+            'error': 'Utilisateur introuvable'
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAdminUser])
+def admin_notifications(request):
+    """
+    قائمة إشعارات الأدمن
+    GET /api/admin/notifications/
+    Query params:
+    - is_read: true/false
+    - limit: عدد النتائج (افتراضي 20)
+    """
+    user = request.user
+    
+    if user.role != 'admin':
+        return Response({
+            'success': False,
+            'error': 'Non autorisé'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    # الحصول على الإشعارات
+    notifications = Notification.objects.filter(
+        recipient=user
+    ).order_by('-created_at')
+    
+    # فلترة حسب حالة القراءة
+    is_read = request.query_params.get('is_read')
+    if is_read is not None:
+        is_read_bool = is_read.lower() == 'true'
+        notifications = notifications.filter(is_read=is_read_bool)
+    
+    # الحد من النتائج
+    limit = int(request.query_params.get('limit', 20))
+    notifications = notifications[:limit]
+    
+    serializer = NotificationListSerializer(notifications, many=True)
+    
+    return Response({
+        'success': True,
+        'data': serializer.data,
+        'total': notifications.count()
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAdminUser])
+def admin_notifications_unread_count(request):
+    """
+    عدد الإشعارات غير المقروءة
+    GET /api/admin/notifications/unread-count/
+    """
+    user = request.user
+    
+    if user.role != 'admin':
+        return Response({
+            'success': False,
+            'error': 'Non autorisé'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    unread_count = Notification.objects.filter(
+        recipient=user,
+        is_read=False
+    ).count()
+    
+    return Response({
+        'success': True,
+        'unread_count': unread_count
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['PUT'])
+@permission_classes([permissions.IsAdminUser])
+def admin_mark_notification_read(request, notification_id):
+    """
+    تحديد إشعار كمقروء
+    PUT /api/admin/notifications/:id/read/
+    """
+    user = request.user
+    
+    if user.role != 'admin':
+        return Response({
+            'success': False,
+            'error': 'Non autorisé'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        notification = Notification.objects.get(
+            id=notification_id,
+            recipient=user
+        )
+        notification.mark_as_read()
+        
+        return Response({
+            'success': True,
+            'message': 'Notification marquée comme lue'
+        }, status=status.HTTP_200_OK)
+        
+    except Notification.DoesNotExist:
+        return Response({
+            'success': False,
+            'error': 'Notification non trouvée'
+        }, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['PUT'])
+@permission_classes([permissions.IsAdminUser])
+def admin_mark_all_read(request):
+    """
+    تحديد جميع الإشعارات كمقروءة
+    PUT /api/admin/notifications/mark-all-read/
+    """
+    user = request.user
+    
+    if user.role != 'admin':
+        return Response({
+            'success': False,
+            'error': 'Non autorisé'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    from django.utils import timezone
+    updated_count = Notification.objects.filter(
+        recipient=user,
+        is_read=False
+    ).update(
+        is_read=True,
+        read_at=timezone.now()
+    )
+    
+    return Response({
+        'success': True,
+        'message': f'{updated_count} notifications marquées comme lues',
+        'updated_count': updated_count
+    }, status=status.HTTP_200_OK)

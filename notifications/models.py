@@ -29,8 +29,17 @@ class Notification(models.Model):
         ('payment_sent', 'Paiement envoyé'),
         ('message_received', 'Message reçu'),
     ]
+
+    ADMIN_NOTIFICATION_TYPES = [
+        ('new_report', 'Nouveau signalement'),
+        ('low_rating', 'Évaluation négative'),
+        ('large_payment', 'Transaction importante'),
+        ('new_user', 'Nouvel utilisateur'),
+        ('task_completed', 'Tâche terminée'),
+        ('payment_pending', 'Paiement en attente'),
+    ]
     
-    ALL_NOTIFICATION_TYPES = CLIENT_NOTIFICATION_TYPES + WORKER_NOTIFICATION_TYPES
+    ALL_NOTIFICATION_TYPES = CLIENT_NOTIFICATION_TYPES + WORKER_NOTIFICATION_TYPES + ADMIN_NOTIFICATION_TYPES
     
     # حقول أساسية - مباشرة مع User
     recipient = models.ForeignKey(

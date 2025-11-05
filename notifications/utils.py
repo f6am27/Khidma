@@ -9,6 +9,10 @@ from typing import Optional, Dict, Any
 from django.utils import timezone
 from .models import Notification, NotificationSettings
 from .firebase_service import firebase_service
+from django.core.cache import cache
+from datetime import timedelta
+from tasks.models import ServiceRequest
+from .admin_signals import create_admin_notification
 
 logger = logging.getLogger('firebase_notifications')
 
@@ -310,3 +314,80 @@ def get_notification_stats(user):
             created_at__gte=timezone.now() - timezone.timedelta(days=7)
         ).count()
     }
+
+
+logger = logging.getLogger(__name__)
+
+PAYMENT_CHECK_CACHE_KEY = 'last_payment_pending_check'
+PAYMENT_CHECK_INTERVAL_HOURS = 24  # كل 24 ساعة
+
+
+def check_pending_payments():
+    """
+    فحص الدفعات المعلقة وإنشاء إشعارات
+    Check pending payments and create notifications
+    """
+    try:
+        # التحقق من آخر فحص
+        last_check = cache.get(PAYMENT_CHECK_CACHE_KEY)
+        now = timezone.now()
+        
+        if last_check:
+            last_check_time = timezone.datetime.fromisoformat(last_check)
+            hours_since_check = (now - last_check_time).total_seconds() / 3600
+            
+            # إذا لم يمر 24 ساعة، لا تفحص
+            if hours_since_check < PAYMENT_CHECK_INTERVAL_HOURS:
+                return
+        
+        # حساب 48 ساعة قبل الآن
+        cutoff_time = now - timedelta(hours=48)
+        
+        # البحث عن المهام المعلقة
+        pending_tasks = ServiceRequest.objects.filter(
+            status='work_completed',
+            work_completed_at__lte=cutoff_time
+        ).exclude(
+            payment__status='completed'
+        )
+        
+        # إنشاء إشعارات
+        count = 0
+        for task in pending_tasks:
+            client_name = task.client.get_full_name() or task.client.phone
+            worker_name = task.assigned_worker.get_full_name() if task.assigned_worker else 'Non assigné'
+            
+            # حساب عدد الساعات
+            hours_passed = int((now - task.work_completed_at).total_seconds() / 3600)
+            
+            # تحقق من عدم وجود إشعار سابق لنفس المهمة
+            from .models import Notification
+            existing = Notification.objects.filter(
+                notification_type='payment_pending',
+                related_task=task
+            ).exists()
+            
+            if not existing:
+                create_admin_notification(
+                    notification_type='payment_pending',
+                    title=f'⏰ Paiement en attente: {task.title}',
+                    message=f'Travail terminé il y a {hours_passed}h. Client: {client_name} | Prestataire: {worker_name} | Montant: {task.budget} MRU',
+                    related_task=task
+                )
+                count += 1
+        
+        # حفظ وقت الفحص الحالي
+        cache.set(PAYMENT_CHECK_CACHE_KEY, now.isoformat(), timeout=None)
+        
+        logger.info(f'✅ Payment pending check completed. {count} notifications created.')
+        
+    except Exception as e:
+        logger.error(f'❌ Error checking pending payments: {str(e)}')
+
+
+def trigger_payment_check_if_needed():
+    """
+    تشغيل فحص الدفعات إذا مر الوقت المحدد
+    Trigger payment check if interval has passed
+    """
+    check_pending_payments()

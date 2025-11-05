@@ -149,6 +149,13 @@ class ImageProcessor:
                 if profile and profile.profile_image:
                     if os.path.isfile(profile.profile_image.path):
                         os.remove(profile.profile_image.path)
+            
+            elif role == 'admin':
+                profile = getattr(user, 'admin_profile', None)
+                if profile and profile.profile_image:
+                    if os.path.isfile(profile.profile_image.path):
+                        os.remove(profile.profile_image.path)
+            
                         
         except Exception as e:
             # تسجيل الخطأ لكن لا نفشل العملية

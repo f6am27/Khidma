@@ -1,6 +1,6 @@
 # admin_api/serializers.py
 from rest_framework import serializers
-from users.models import User, WorkerProfile, ClientProfile
+from users.models import User, AdminProfile,WorkerProfile, ClientProfile
 from tasks.models import ServiceRequest, TaskApplication, TaskReview
 from payments.models import Payment
 from chat.models import Report, Conversation, Message
@@ -8,6 +8,7 @@ from services.models import ServiceCategory, NouakchottArea
 from django.db.models import Count, Sum, Avg, Q
 from django.utils import timezone
 from datetime import timedelta
+
 
 
 # ==================== Dashboard Statistics ====================
@@ -232,3 +233,203 @@ class FinancialSummarySerializer(serializers.Serializer):
     average_transaction_value = serializers.DecimalField(max_digits=10, decimal_places=2)
     top_earning_workers = serializers.ListField()
     revenue_by_category = serializers.DictField()
+
+
+
+class AdminProfileUpdateSerializer(serializers.Serializer):
+    """
+    تحديث بيانات الأدمن - كل الحقول اختيارية
+    """
+    # حقول من User
+    first_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    last_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    email = serializers.EmailField(required=False)
+    
+    # حقول من AdminProfile
+    display_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    bio = serializers.CharField(required=False, allow_blank=True)
+    department = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    
+    def validate_email(self, value):
+        """التحقق من أن الإيميل غير مستخدم من قبل أدمن آخر"""
+        user = self.context['request'].user
+        
+        if User.objects.filter(email=value, role='admin').exclude(id=user.id).exists():
+            raise serializers.ValidationError("Cet email est déjà utilisé par un autre administrateur")
+        
+        return value
+    
+    def update(self, instance, validated_data):
+        """تحديث البيانات"""
+        user = instance
+        
+        # تحديث حقول User
+        if 'first_name' in validated_data:
+            user.first_name = validated_data['first_name']
+        if 'last_name' in validated_data:
+            user.last_name = validated_data['last_name']
+        if 'email' in validated_data:
+            user.email = validated_data['email']
+        
+        user.save()
+        
+        # تحديث حقول AdminProfile
+        admin_profile, created = AdminProfile.objects.get_or_create(user=user)
+        
+        if 'display_name' in validated_data:
+            admin_profile.display_name = validated_data['display_name']
+        if 'bio' in validated_data:
+            admin_profile.bio = validated_data['bio']
+        if 'department' in validated_data:
+            admin_profile.department = validated_data['department']
+        
+        admin_profile.save()
+        
+        return user
+
+
+class AdminProfileSerializer(serializers.Serializer):
+    """
+    عرض بيانات الأدمن كاملة
+    """
+    id = serializers.IntegerField(read_only=True)
+    email = serializers.EmailField(read_only=True)
+    first_name = serializers.CharField(read_only=True)
+    last_name = serializers.CharField(read_only=True)
+    display_name = serializers.CharField(read_only=True)
+    bio = serializers.CharField(read_only=True)
+    department = serializers.CharField(read_only=True)
+    profile_image = serializers.SerializerMethodField()
+    is_online = serializers.BooleanField(read_only=True)
+    last_activity = serializers.DateTimeField(read_only=True)
+    
+    def get_profile_image(self, obj):
+        """الحصول على رابط الصورة"""
+        if hasattr(obj, 'admin_profile') and obj.admin_profile and obj.admin_profile.profile_image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.admin_profile.profile_image.url)
+        return None
+    
+
+class AdminChangePasswordSerializer(serializers.Serializer):
+    """
+    تغيير كلمة المرور للأدمن
+    """
+    old_password = serializers.CharField(
+        min_length=6, 
+        max_length=128, 
+        write_only=True,
+        error_messages={
+            'required': 'Mot de passe actuel requis',
+            'min_length': 'Le mot de passe doit contenir au moins 6 caractères'
+        }
+    )
+    new_password = serializers.CharField(
+        min_length=6, 
+        max_length=128, 
+        write_only=True,
+        error_messages={
+            'required': 'Nouveau mot de passe requis',
+            'min_length': 'Le mot de passe doit contenir au moins 6 caractères'
+        }
+    )
+    new_password_confirm = serializers.CharField(
+        min_length=6, 
+        max_length=128, 
+        write_only=True,
+        error_messages={
+            'required': 'Confirmation du mot de passe requise',
+            'min_length': 'Le mot de passe doit contenir au moins 6 caractères'
+        }
+    )
+
+    def validate_old_password(self, value):
+        """التحقق من صحة كلمة المرور القديمة"""
+        user = self.context['request'].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Mot de passe actuel incorrect")
+        return value
+
+    def validate(self, attrs):
+        """التحقق من تطابق كلمات المرور الجديدة"""
+        if attrs['new_password'] != attrs['new_password_confirm']:
+            raise serializers.ValidationError({
+                "new_password_confirm": "Les mots de passe ne correspondent pas"
+            })
+        
+        # التحقق من أن كلمة المرور الجديدة مختلفة عن القديمة
+        if attrs['old_password'] == attrs['new_password']:
+            raise serializers.ValidationError({
+                "new_password": "Le nouveau mot de passe doit être différent de l'ancien"
+            })
+        
+        return attrs
+    
+class AdminPasswordResetRequestSerializer(serializers.Serializer):
+    """
+    طلب إعادة تعيين كلمة المرور
+    """
+    email = serializers.EmailField(
+        error_messages={
+            'required': 'Email requis',
+            'invalid': 'Email invalide'
+        }
+    )
+    language = serializers.ChoiceField(
+        choices=['fr', 'ar', 'en'],
+        default='fr',
+        required=False
+    )
+    
+    def validate_email(self, value):
+        """التحقق من وجود الأدمن"""
+        try:
+            user = User.objects.get(email=value, role='admin')
+            if not user.is_active:
+                raise serializers.ValidationError("Compte désactivé")
+        except User.DoesNotExist:
+            raise serializers.ValidationError("Aucun administrateur avec cet email")
+        
+        return value
+
+
+class AdminPasswordResetConfirmSerializer(serializers.Serializer):
+    """
+    تأكيد إعادة التعيين بـ OTP
+    """
+    email = serializers.EmailField()
+    otp = serializers.CharField(
+        min_length=6,
+        max_length=6,
+        error_messages={
+            'required': 'Code OTP requis',
+            'min_length': 'Le code doit contenir 6 chiffres',
+            'max_length': 'Le code doit contenir 6 chiffres'
+        }
+    )
+    new_password = serializers.CharField(
+        min_length=6,
+        max_length=128,
+        write_only=True,
+        error_messages={
+            'required': 'Nouveau mot de passe requis',
+            'min_length': 'Le mot de passe doit contenir au moins 6 caractères'
+        }
+    )
+    new_password_confirm = serializers.CharField(
+        min_length=6,
+        max_length=128,
+        write_only=True,
+        error_messages={
+            'required': 'Confirmation requise'
+        }
+    )
+    
+    def validate(self, attrs):
+        """التحقق من تطابق كلمات المرور"""
+        if attrs['new_password'] != attrs['new_password_confirm']:
+            raise serializers.ValidationError({
+                "new_password_confirm": "Les mots de passe ne correspondent pas"
+            })
+        return attrs
