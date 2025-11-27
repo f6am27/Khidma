@@ -326,6 +326,8 @@ def check_pending_payments():
     """
     فحص الدفعات المعلقة وإنشاء إشعارات
     Check pending payments and create notifications
+    
+    ✅ يستخدم create_admin_notification التي تتحقق من الإعدادات
     """
     try:
         # التحقق من آخر فحص
@@ -361,20 +363,24 @@ def check_pending_payments():
             hours_passed = int((now - task.work_completed_at).total_seconds() / 3600)
             
             # تحقق من عدم وجود إشعار سابق لنفس المهمة
-            from .models import Notification
             existing = Notification.objects.filter(
                 notification_type='payment_pending',
                 related_task=task
             ).exists()
             
             if not existing:
-                create_admin_notification(
+                # ✅ استخدام create_admin_notification بدلاً من Notification.objects.create
+                # هذه الدالة تتحقق تلقائياً من إعدادات الإشعارات
+                created_notifications = create_admin_notification(
                     notification_type='payment_pending',
-                    title=f'⏰ Paiement en attente: {task.title}',
+                    title=f'Paiement en attente: {task.title}',
                     message=f'Travail terminé il y a {hours_passed}h. Client: {client_name} | Prestataire: {worker_name} | Montant: {task.budget} MRU',
                     related_task=task
                 )
-                count += 1
+                
+                # عدّ الإشعارات التي تم إنشاؤها فعلياً
+                if created_notifications:
+                    count += len(created_notifications)
         
         # حفظ وقت الفحص الحالي
         cache.set(PAYMENT_CHECK_CACHE_KEY, now.isoformat(), timeout=None)

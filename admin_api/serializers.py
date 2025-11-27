@@ -104,26 +104,74 @@ class AdminUserDetailSerializer(serializers.ModelSerializer):
         return obj.get_full_name() or obj.phone or obj.email
     
     def get_profile_details(self, obj):
+
+        def get_profile_image_url(profile):
+            if profile and profile.profile_image:
+                request = self.context.get('request')
+                if request:
+                    return request.build_absolute_uri(profile.profile_image.url)
+                return profile.profile_image.url
+            return None
+    
+
         if obj.role == 'client' and hasattr(obj, 'client_profile'):
             profile = obj.client_profile
+            
+            # ✅ حساب البيانات مباشرة من قاعدة البيانات
+            from tasks.models import ServiceRequest
+            from django.db.models import Sum
+            
+            # عدد المهام المنشورة
+            total_tasks_published = ServiceRequest.objects.filter(client=obj).count()
+            
+            # عدد المهام المكتملة
+            total_tasks_completed = ServiceRequest.objects.filter(
+                client=obj,
+                status='completed'
+            ).count()
+            
+            # المبلغ الكلي المنفق
+            total_amount_spent = ServiceRequest.objects.filter(
+                client=obj,
+                status='completed'
+            ).aggregate(total=Sum('final_price'))['total'] or 0
+            
             return {
                 'gender': profile.gender,
                 'address': profile.address,
-                'total_tasks_published': profile.total_tasks_published,
-                'total_tasks_completed': profile.total_tasks_completed,
-                'total_amount_spent': str(profile.total_amount_spent)
+                'total_tasks_published': total_tasks_published,  
+                'total_tasks_completed': total_tasks_completed,  
+                'total_amount_spent': str(total_amount_spent),
+                'profile_image_url': get_profile_image_url(profile)  # ✅ إضافة الصورة
+ 
             }
+        
         elif obj.role == 'worker' and hasattr(obj, 'worker_profile'):
             profile = obj.worker_profile
             return {
+                # معلومات الخدمة
                 'service_category': profile.service_category,
                 'service_area': profile.service_area,
                 'base_price': str(profile.base_price),
                 'average_rating': float(profile.average_rating),
                 'total_jobs_completed': profile.total_jobs_completed,
-                'total_reviews': profile.total_reviews
+                'total_reviews': profile.total_reviews,
+                
+                # حالة الاتصال
+                'is_online': profile.is_online,
+                
+                # معلومات الموقع
+                'location_sharing_enabled': profile.location_sharing_enabled,
+                'current_latitude': str(profile.current_latitude) if profile.current_latitude else None,
+                'current_longitude': str(profile.current_longitude) if profile.current_longitude else None,
+                'location_accuracy': float(profile.location_accuracy) if profile.location_accuracy else None,
+                'location_last_updated': profile.location_last_updated.isoformat() if profile.location_last_updated else None,
+                'location_status': profile.location_status,
+                'profile_image_url': get_profile_image_url(profile) 
             }
+        
         return None
+
     
     def get_statistics(self, obj):
         if obj.role == 'client':

@@ -12,10 +12,8 @@ from tasks.models import ServiceRequest, TaskApplication, TaskReview
 from payments.models import Payment
 from chat.models import Report, Conversation, Message
 from services.models import ServiceCategory, NouakchottArea
-from notifications.models import Notification
+from notifications.models import Notification,NotificationSettings
 from notifications.serializers import NotificationListSerializer
-
-
 from .email_service import (
     generate_otp, 
     send_password_reset_email, 
@@ -215,13 +213,28 @@ class AdminUserListView(generics.ListAPIView):
         return queryset.order_by('-date_joined')
 
 
-class AdminUserDetailView(generics.RetrieveAPIView):
-    """تفاصيل المستخدم"""
+class AdminUserDetailView(generics.RetrieveDestroyAPIView):  # ✅ غيرنا من RetrieveAPIView
+    """تفاصيل المستخدم + الحذف"""
     serializer_class = AdminUserDetailSerializer
     permission_classes = [permissions.IsAdminUser]
     queryset = User.objects.filter(role__in=['client', 'worker'])
     lookup_field = 'id'
-
+    
+    def destroy(self, request, *args, **kwargs):
+        """حذف المستخدم"""
+        instance = self.get_object()
+        user_id = instance.id
+        user_name = instance.get_full_name() or instance.phone
+        
+        # حذف المستخدم
+        self.perform_destroy(instance)
+        
+        return Response({
+            'success': True,
+            'message': 'تم حذف المستخدم بنجاح',
+            'user_id': user_id,
+            'user_name': user_name
+        }, status=status.HTTP_200_OK)
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAdminUser])
@@ -895,3 +908,23 @@ def admin_mark_all_read(request):
         'message': f'{updated_count} notifications marquées comme lues',
         'updated_count': updated_count
     }, status=status.HTTP_200_OK)
+
+
+class AdminNotificationSettingsView(generics.RetrieveUpdateAPIView):
+    """
+    إعدادات الإشعارات للأدمن
+    Admin notification settings
+    """
+    permission_classes = [permissions.IsAdminUser]
+    
+    def get_object(self):
+        """الحصول على إعدادات الإشعارات أو إنشاؤها"""
+        settings, created = NotificationSettings.objects.get_or_create(
+            user=self.request.user,
+            defaults={'notifications_enabled': True}
+        )
+        return settings
+    
+    def get_serializer_class(self):
+        from notifications.serializers import NotificationSettingsSerializer
+        return NotificationSettingsSerializer

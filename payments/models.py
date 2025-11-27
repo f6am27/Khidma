@@ -38,9 +38,10 @@ class Payment(models.Model):
     )
     
     PAYMENT_METHOD_CHOICES = [
-        ('cash', 'Especes'),
+        ('cash', 'Espèces'),
         ('bankily', 'Bankily'),
         ('sedad', 'Sedad'),
+        ('masrivi', 'Masrivi'),
     ]
     
     payment_method = models.CharField(
@@ -56,16 +57,39 @@ class Payment(models.Model):
         unique=True
     )
     
+    # ✅ معلومات Moosyl (للمدفوعات الإلكترونية)
+    moosyl_transaction_id = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+        unique=True,
+        help_text="معرف المعاملة من Moosyl"
+    )
+    
+    moosyl_response = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="الاستجابة الكاملة من Moosyl"
+    )
+    
+    failure_reason = models.TextField(
+        blank=True,
+        null=True,
+        help_text="سبب الفشل إن وجد"
+    )
+    
     STATUS_CHOICES = [
         ('pending', 'En attente'),
-        ('completed', 'Termine'),
-        ('cancelled', 'Annule'),
+        ('processing', 'En cours'),
+        ('completed', 'Terminé'),
+        ('failed', 'Échoué'),
+        ('cancelled', 'Annulé'),
     ]
     
     status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,
-        default='completed'
+        default='pending'
     )
     
     notes = models.TextField(
@@ -85,6 +109,7 @@ class Payment(models.Model):
             models.Index(fields=['payer', '-created_at']),
             models.Index(fields=['receiver', '-created_at']),
             models.Index(fields=['status']),
+            models.Index(fields=['moosyl_transaction_id']),
         ]
     
     def __str__(self):
@@ -105,6 +130,26 @@ class Payment(models.Model):
         return self.status == 'completed'
     
     @property
+    def is_electronic_payment(self):
+        """التحقق من أن الدفع إلكتروني (عبر Moosyl)"""
+        return self.payment_method in ['bankily', 'sedad', 'masrivi']
+    
+    @property
     def payment_method_display(self):
         """عرض طريقة الدفع بشكل مقروء"""
         return dict(self.PAYMENT_METHOD_CHOICES).get(self.payment_method)
+    
+    def mark_as_completed(self, moosyl_transaction_id=None):
+        """تمييز الدفع كمكتمل"""
+        from django.utils import timezone
+        self.status = 'completed'
+        self.completed_at = timezone.now()
+        if moosyl_transaction_id:
+            self.moosyl_transaction_id = moosyl_transaction_id
+        self.save()
+    
+    def mark_as_failed(self, reason=""):
+        """تمييز الدفع كفاشل"""
+        self.status = 'failed'
+        self.failure_reason = reason
+        self.save()

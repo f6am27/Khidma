@@ -1,15 +1,10 @@
-# clients/serializers.py - مُصحح للنظام الجديد
+# clients/serializers.py 
 from rest_framework import serializers
 from django.utils import timezone
 from .models import FavoriteWorker, ClientSettings
 from users.models import User,ClientProfile  
 
 
-# clients/serializers.py - مُصحح للنظام الجديد
-from rest_framework import serializers
-from django.utils import timezone
-from .models import FavoriteWorker, ClientSettings
-from users.models import User
 class ClientProfileSerializer(serializers.ModelSerializer):
     """
     Client profile serializer - simplified version
@@ -42,6 +37,11 @@ class ClientProfileSerializer(serializers.ModelSerializer):
     member_since = serializers.SerializerMethodField(read_only=True)
     success_rate = serializers.SerializerMethodField(read_only=True)
     
+    # ✅✅✅ إضافة حقول Online ✅✅✅
+    is_online = serializers.BooleanField(read_only=True)
+    last_seen = serializers.DateTimeField(read_only=True)
+    # ✅✅✅ نهاية الإضافة ✅✅✅
+    
     class Meta:
         model = User
         fields = [
@@ -50,13 +50,14 @@ class ClientProfileSerializer(serializers.ModelSerializer):
             'profile_image_url', 'is_verified', 'total_tasks_published',
             'total_tasks_completed', 'total_amount_spent', 'success_rate',
             'notifications_enabled', 'member_since',
+            'is_online', 'last_seen',  # ✅ إضافة
             'created_at', 'updated_at'
         ]
         read_only_fields = [
             'id', 'phone', 'is_verified', 'total_tasks_published',
             'total_tasks_completed', 'total_amount_spent', 'success_rate',
             'member_since', 'created_at', 'updated_at', 'profile_image_url',
-            'full_name'
+            'full_name', 'is_online', 'last_seen'  # ✅ إضافة
         ]
     
     def __init__(self, *args, **kwargs):
@@ -127,12 +128,20 @@ class ClientProfileSerializer(serializers.ModelSerializer):
             data['address'] = profile.address or ''
             data['emergency_contact'] = profile.emergency_contact or ''
             data['notifications_enabled'] = profile.notifications_enabled
+            # ✅✅✅ إضافة حقول Online ✅✅✅
+            data['is_online'] = profile.is_online
+            data['last_seen'] = profile.last_seen
+            # ✅✅✅ نهاية الإضافة ✅✅✅
         else:
             # Defaults if no profile exists
             data['gender'] = ''
             data['address'] = ''
             data['emergency_contact'] = ''
             data['notifications_enabled'] = True
+            # ✅✅✅ إضافة قيم افتراضية ✅✅✅
+            data['is_online'] = False
+            data['last_seen'] = None
+            # ✅✅✅ نهاية الإضافة ✅✅✅
         
         return data
     

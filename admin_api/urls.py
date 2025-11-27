@@ -25,7 +25,7 @@ urlpatterns = [
     path('users/<int:id>/', views.AdminUserDetailView.as_view(), name='user-detail'),
     path('users/<int:user_id>/suspend/', views.suspend_user, name='suspend-user'),
     path('users/<int:user_id>/unsuspend/', views.unsuspend_user, name='unsuspend-user'),
-    path('users/<int:user_id>/delete/', views.delete_user, name='delete-user'),
+    path('users/<int:id>/', views.AdminUserDetailView.as_view(), name='user-detail'),
     
     # Reports Management
     path('reports/', views.AdminReportListView.as_view(), name='reports-list'),
@@ -58,5 +58,7 @@ urlpatterns = [
     path('notifications/unread-count/', views.admin_notifications_unread_count, name='admin-notifications-unread-count'),
     path('notifications/<int:notification_id>/read/', views.admin_mark_notification_read, name='admin-mark-notification-read'),
     path('notifications/mark-all-read/', views.admin_mark_all_read, name='admin-mark-all-read'),
+    path('notification-settings/', views.AdminNotificationSettingsView.as_view(), name='notification-settings'),
+
 
 ]

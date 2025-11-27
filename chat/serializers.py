@@ -40,12 +40,15 @@ class UserProfileSerializer(serializers.ModelSerializer):
         return None
     
     def get_is_online(self, obj):
-        """حالة الاتصال"""
-        if obj.last_login:
+        """حالة الاتصال - محدثة"""
+        if obj.role == 'worker' and hasattr(obj, 'worker_profile'):
+            return obj.worker_profile.is_online
+        elif obj.role == 'client' and hasattr(obj, 'client_profile'):
+            return obj.client_profile.is_online
+        elif obj.last_login:
             time_diff = timezone.now() - obj.last_login
-            return time_diff.total_seconds() < 300  # 5 دقائق
+            return time_diff.total_seconds() < 300
         return False
-
 
 class MessageSerializer(serializers.ModelSerializer):
     """
@@ -55,12 +58,16 @@ class MessageSerializer(serializers.ModelSerializer):
     sender = UserProfileSerializer(read_only=True)
     is_from_me = serializers.SerializerMethodField()
     time_ago = serializers.SerializerMethodField()
+    formatted_time = serializers.SerializerMethodField()
+    formatted_date = serializers.SerializerMethodField() 
+    date_key = serializers.SerializerMethodField()     
     
     class Meta:
         model = Message
         fields = [
             'id', 'content', 'sender', 'is_from_me', 'is_read', 
-            'created_at', 'read_at', 'time_ago'
+            'created_at', 'read_at', 'time_ago',
+            'formatted_time', 'formatted_date', 'date_key' 
         ]
         read_only_fields = ['id', 'sender', 'is_read', 'created_at', 'read_at']
     
@@ -90,6 +97,37 @@ class MessageSerializer(serializers.ModelSerializer):
             return f'{diff.days}j'
         else:
             return f'{obj.created_at.day}/{obj.created_at.month}'
+    
+    def get_formatted_time(self, obj):
+        return obj.created_at.strftime('%H:%M')
+    
+    def get_formatted_date(self, obj):
+        now = timezone.now()
+        message_date = obj.created_at.date()
+        today = now.date()
+        
+        if message_date == today:
+            return "Aujourd'hui"
+        elif message_date == today - timezone.timedelta(days=1):
+            return "Hier"
+        elif message_date.year == today.year:
+            # نفس السنة: 15 Nov
+            months_fr = [
+                'Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin',
+                'Juil', 'Août', 'Sep', 'Oct', 'Nov', 'Déc'
+            ]
+            return f"{message_date.day} {months_fr[message_date.month - 1]}"
+        else:
+            # سنة مختلفة: 15 Nov 2023
+            months_fr = [
+                'Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin',
+                'Juil', 'Août', 'Sep', 'Oct', 'Nov', 'Déc'
+            ]
+            return f"{message_date.day} {months_fr[message_date.month - 1]} {message_date.year}"
+    
+    def get_date_key(self, obj):
+        """مفتاح التاريخ للتجميع (2024-11-23)"""
+        return obj.created_at.date().isoformat()
 
 
 class ConversationSerializer(serializers.ModelSerializer):

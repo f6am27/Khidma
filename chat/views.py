@@ -396,12 +396,10 @@ def start_conversation(request):
         defaults={'is_active': True}
     )
     
-    # إذا كانت المحادثة موجودة لكن غير نشطة، فعّلها
     if not created and not conversation.is_active:
         conversation.is_active = True
         conversation.save()
     
-    # إرسال الرسالة الأولى إذا تم توفيرها
     first_message = None
     if initial_message and initial_message.strip():
         with transaction.atomic():
@@ -460,3 +458,48 @@ def start_conversation(request):
         }
     
     return Response(response_data, status=status.HTTP_200_OK)
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def update_online_status(request):
+    """
+    تحديث حالة الاتصال (Online/Offline)
+    POST /api/chat/update-status/
+    Body: {"is_online": true/false}
+    """
+    user = request.user
+    is_online = request.data.get('is_online', False)
+    
+    try:
+        if user.role == 'client' and hasattr(user, 'client_profile'):
+            if is_online:
+                user.client_profile.set_online()
+            else:
+                user.client_profile.set_offline()
+            
+            return Response({
+                'message': 'Client status updated',
+                'is_online': user.client_profile.is_online
+            }, status=status.HTTP_200_OK)
+        
+        elif user.role == 'worker' and hasattr(user, 'worker_profile'):
+            if is_online:
+                user.worker_profile.set_online()
+            else:
+                user.worker_profile.set_offline()
+            
+            return Response({
+                'message': 'Worker status updated',
+                'is_online': user.worker_profile.is_online
+            }, status=status.HTTP_200_OK)
+        
+        else:
+            return Response(
+                {'error': 'Profile not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+    
+    except Exception as e:
+        return Response(
+            {'error': str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )

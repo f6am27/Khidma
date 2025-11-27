@@ -5,6 +5,35 @@ from . import views
 app_name = 'payments'
 
 urlpatterns = [
+    # ============================================
+    # MOOSYL PAYMENT ENDPOINTS (NEW)
+    # ============================================
+    
+    # إنشاء طلب دفع إلكتروني
+    path(
+        'moosyl/initiate/',
+        views.InitiateMoosylPaymentView.as_view(),
+        name='moosyl-initiate'
+    ),
+    
+    # التحقق من حالة الدفع
+    path(
+        'moosyl/verify/<int:payment_id>/',
+        views.VerifyMoosylPaymentView.as_view(),
+        name='moosyl-verify'
+    ),
+    
+    # Webhook من Moosyl
+    path(
+        'moosyl/webhook/',
+        views.moosyl_webhook,
+        name='moosyl-webhook'
+    ),
+    
+    # ============================================
+    # ORIGINAL ENDPOINTS
+    # ============================================
+    
     # List and create payments
     path('', views.PaymentListCreateView.as_view(), name='payment-list-create'),
     

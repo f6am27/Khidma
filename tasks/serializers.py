@@ -92,14 +92,16 @@ class ServiceRequestListSerializer(serializers.ModelSerializer):
     timeDescription = serializers.CharField(source='time_description', read_only=True, allow_null=True, required=False)  
     workStartedAt = serializers.DateTimeField(source='work_started_at', read_only=True, allow_null=True) 
     finalPrice = serializers.DecimalField(source='final_price', max_digits=10, decimal_places=2, read_only=True, allow_null=True)
-
+    client = serializers.IntegerField(source='client.id', read_only=True)  # ✅ جديد
+    client_phone = serializers.CharField(source='client.phone', read_only=True)  # ✅ جديد
     class Meta:
         model = ServiceRequest
         fields = [
             'id', 'title', 'description', 'serviceType', 'budget', 'finalPrice',
             'location', 'preferredTime', 'status', 'createdAt',
             'applicantsCount', 'assignedProvider', 'providerRating',
-            'isUrgent', 'timeDescription' , 'workStartedAt' 
+            'isUrgent', 'timeDescription' , 'workStartedAt',
+        'client', 'client_phone'  
         ]
         extra_kwargs = {'preferredTime': {'source': 'preferred_time'}}
 
@@ -144,7 +146,7 @@ class ServiceRequestDetailSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'description', 'serviceType', 'service_category',
             'budget', 'final_price', 'finalPrice', 'location', 'preferred_time', 'preferredTime',
-            'latitude', 'longitude', 'status', 'status_display', 'is_urgent', 
+            'latitude', 'longitude' ,'status', 'status_display', 'is_urgent', 
             'requires_materials', 'client_name', 'client_phone', 'createdAt', 
             'applicantsCount', 'assigned_worker_info', 'applications',
             'has_exact_coordinates', 'location_type', 'distance_from_worker'
@@ -384,6 +386,8 @@ class AvailableTaskSerializer(serializers.ModelSerializer):
     distance_from_worker = serializers.SerializerMethodField()
     has_applied = serializers.SerializerMethodField()
     application_status = serializers.SerializerMethodField()
+    client = serializers.IntegerField(source='client.id', read_only=True) 
+    client_phone = serializers.CharField(source='client.phone', read_only=True) 
 
     class Meta:
         model = ServiceRequest
@@ -393,7 +397,7 @@ class AvailableTaskSerializer(serializers.ModelSerializer):
             'requires_materials', 'createdAt', 'applicantsCount',
             'client_name', 'client_rating', 'distance_from_worker',
             'has_applied', 'application_status',
-            'latitude', 'longitude'
+            'latitude', 'longitude', 'client', 'client_phone' 
         ]
 
     def get_client_name(self, obj):

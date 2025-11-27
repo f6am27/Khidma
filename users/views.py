@@ -165,7 +165,6 @@ class LoginView(APIView):
                 else:
                     # انتهى وقت التعليق - إعادة التفعيل تلقائياً
                     user.is_suspended = False
-                    # user.is_active = True
                     user.suspended_until = None
                     user.suspension_reason = ''
                     user.save(update_fields=['is_suspended', 'suspended_until', 'suspension_reason'])
@@ -185,7 +184,13 @@ class LoginView(APIView):
             user.worker_profile.is_online = True
             user.worker_profile.is_available = True
             user.worker_profile.location_sharing_enabled = True
-            user.worker_profile.save(update_fields=['is_online', 'is_available','location_sharing_enabled'])
+            user.worker_profile.save(update_fields=['is_online', 'is_available', 'location_sharing_enabled'])
+        
+        # ✅✅✅ إضافة تحديث is_online للعميل ✅✅✅
+        elif user.is_client:
+            client_profile, created = ClientProfile.objects.get_or_create(user=user)
+            client_profile.set_online()
+        # ✅✅✅ نهاية الإضافة ✅✅✅
         
         # ✅ حفظ Device Token
         device_token = request.data.get('device_token')
@@ -445,21 +450,26 @@ class LogoutView(APIView):
         if user.is_worker and hasattr(user, 'worker_profile'):
             worker_profile = user.worker_profile
             worker_profile.is_online = False
-            worker_profile.is_available = False  # ✅ جديد
+            worker_profile.is_available = False
             worker_profile.location_sharing_enabled = False
             worker_profile.location_status = 'disabled'
             worker_profile.save(update_fields=[
                 'is_online',
-                'is_available',  # ✅ جديد
+                'is_available',
                 'location_sharing_enabled', 
                 'location_status'
             ])
         
+        # ✅✅✅ إذا كان عميل ✅✅✅
+        elif user.is_client and hasattr(user, 'client_profile'):
+            user.client_profile.set_offline()
+        # ✅✅✅ نهاية الإضافة ✅✅✅
+        
         return Response({
             "success": True,
             "message": "تم تسجيل الخروج بنجاح"
-        }, status=status.HTTP_200_OK)   
-
+        }, status=status.HTTP_200_OK)
+    
 class SetWorkerOnlineView(APIView):
     """
     تحديث حالة is_online للعامل

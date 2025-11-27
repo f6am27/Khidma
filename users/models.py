@@ -469,6 +469,17 @@ class ClientProfile(models.Model):
         max_digits=10, decimal_places=2, default=0.00
     )
     
+    # ✅✅✅ إضافة حقول الـ Online ✅✅✅
+    is_online = models.BooleanField(
+        default=False,
+        help_text="هل العميل متصل حالياً"
+    )
+    last_seen = models.DateTimeField(
+        auto_now=True,
+        help_text="آخر ظهور للعميل"
+    )
+    # ✅✅✅ نهاية الإضافة ✅✅✅
+    
     # الإعدادات
     notifications_enabled = models.BooleanField(default=True)
     
@@ -483,6 +494,23 @@ class ClientProfile(models.Model):
     
     def __str__(self):
         return f"Client: {self.user.get_full_name()}"
+    
+    # ✅ Methods للتحكم بحالة الاتصال (مثل العامل)
+    def set_online(self):
+        """تعيين العميل كمتصل"""
+        self.is_online = True
+        self.save(update_fields=['is_online', 'last_seen'])
+    
+    def set_offline(self):
+        """تعيين العميل كغير متصل"""
+        self.is_online = False
+        self.save(update_fields=['is_online'])
+    
+    def update_activity(self):
+        """تحديث آخر نشاط للعميل"""
+        from django.utils import timezone
+        self.last_seen = timezone.now()
+        self.save(update_fields=['last_seen'])
     
     @property
     def success_rate(self):

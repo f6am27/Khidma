@@ -63,5 +63,7 @@ urlpatterns = [
         name='blocked-users'
     ),
     path('start-conversation/', views.start_conversation, name='start_conversation'),
+    path('update-status/', views.update_online_status, name='update_online_status'),
+
 
 ]

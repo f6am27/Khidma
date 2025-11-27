@@ -279,3 +279,26 @@ EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', f'Khidma Admin <{EMAIL_HOST_USER}>')
 
+
+# ==========================================
+# MOOSYL PAYMENT GATEWAY SETTINGS
+# ==========================================
+
+# Moosyl API Keys
+MOOSYL_SECRET_KEY = os.environ.get('MOOSYL_SECRET_KEY', '')
+MOOSYL_PUBLISHABLE_KEY = os.environ.get('MOOSYL_PUBLISHABLE_KEY', '')
+
+# Moosyl API URL (Sandbox للاختبار)
+MOOSYL_BASE_URL = 'https://api.moosyl.com'
+
+# Webhook URL
+MOOSYL_WEBHOOK_URL = os.environ.get(
+    'MOOSYL_WEBHOOK_URL', 
+    'http://localhost:8000/api/payments/moosyl/webhook/'
+)
+
+# Timeout settings
+MOOSYL_TIMEOUT = 30  # seconds
+
+# Currency
+MOOSYL_CURRENCY = 'MRU'  # Ouguiya

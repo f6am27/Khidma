@@ -294,6 +294,7 @@ class NotificationSettingsView(generics.RetrieveUpdateAPIView):
     """
     serializer_class = NotificationSettingsSerializer
     permission_classes = [permissions.IsAuthenticated]
+    http_method_names = ['get', 'put', 'patch']  # ✅ إضافة PATCH
     
     def get_object(self):
         """الحصول على إعدادات الإشعارات أو إنشاؤها"""
@@ -301,7 +302,21 @@ class NotificationSettingsView(generics.RetrieveUpdateAPIView):
             user=self.request.user,
             defaults={'notifications_enabled': True}
         )
+        if created:
+            print(f'✅ Created notification settings for user: {self.request.user.phone}')
         return settings
+    
+    def update(self, request, *args, **kwargs):
+        """تحديث الإعدادات مع logging"""
+        instance = self.get_object()
+        print(f'📍 Updating settings for user: {request.user.phone}')
+        print(f'📩 Request data: {request.data}')
+        
+        response = super().update(request, *args, **kwargs)
+        
+        print(f'✅ Settings updated: notifications_enabled = {instance.notifications_enabled}')
+        
+        return response
 
 
 @api_view(['GET'])

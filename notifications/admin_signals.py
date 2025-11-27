@@ -4,7 +4,7 @@ from django.dispatch import receiver
 from django.utils import timezone
 from django.db.models import Q
 from users.models import User
-from .models import Notification
+from .models import Notification, NotificationSettings
 
 
 def get_admin_users():
@@ -16,19 +16,29 @@ def create_admin_notification(notification_type, title, message, **kwargs):
     """
     إنشاء إشعار لجميع المسؤولين
     Create notification for all admins
+    
+    ✅ يتحقق من إعدادات الإشعارات قبل الإنشاء
     """
     admins = get_admin_users()
     notifications_created = []
     
     for admin in admins:
-        notification = Notification.objects.create(
-            recipient=admin,
-            notification_type=notification_type,
-            title=title,
-            message=message,
-            **kwargs
+        # ✅ التحقق من إعدادات الإشعارات
+        settings, _ = NotificationSettings.objects.get_or_create(
+            user=admin,
+            defaults={'notifications_enabled': True}
         )
-        notifications_created.append(notification)
+        
+        # ✅ إنشاء الإشعار فقط إذا كانت الإشعارات مفعّلة
+        if settings.should_send_notification():
+            notification = Notification.objects.create(
+                recipient=admin,
+                notification_type=notification_type,
+                title=title,
+                message=message,
+                **kwargs
+            )
+            notifications_created.append(notification)
     
     return notifications_created
 
@@ -69,8 +79,8 @@ def notify_admin_new_report(sender, instance, created, **kwargs):
         
         create_admin_notification(
             notification_type='new_report',
-            title='🚨 Nouveau signalement',
-            message=f'{reporter_name} a signalé {reported_name} pour: {reason_display}'
+            title='Nouveau signalement',
+            message=f'{reporter_name} a signale {reported_name} pour: {reason_display}'
         )
 
 
@@ -86,12 +96,11 @@ def notify_admin_low_rating(sender, instance, created, **kwargs):
     if created and instance.rating < 2:
         worker_name = instance.worker.get_full_name() or instance.worker.phone
         task_title = instance.service_request.title
-        stars = '⭐' * instance.rating
         
         create_admin_notification(
             notification_type='low_rating',
-            title=f'⚠️ Évaluation négative ({stars})',
-            message=f'{worker_name} a reçu une note de {instance.rating}/5 pour "{task_title}"',
+            title=f'Evaluation negative: {instance.rating}/5',
+            message=f'{worker_name} a recu une note de {instance.rating}/5 pour "{task_title}"',
             related_task=instance.service_request
         )
 
@@ -111,8 +120,8 @@ def notify_admin_large_payment(sender, instance, created, **kwargs):
         
         create_admin_notification(
             notification_type='large_payment',
-            title=f'💰 Transaction importante: {instance.amount} MRU',
-            message=f'Paiement de {instance.amount} MRU de {payer_name} à {receiver_name}',
+            title=f'Transaction importante: {instance.amount} MRU',
+            message=f'Paiement de {instance.amount} MRU de {payer_name} a {receiver_name}',
             related_task=instance.task if hasattr(instance, 'task') else None
         )
 
@@ -129,17 +138,11 @@ def notify_admin_task_completed(sender, instance, created, update_fields, **kwar
     if not created and update_fields and 'status' in update_fields:
         if instance.status == 'completed':
             client_name = instance.client.get_full_name() or instance.client.phone
-            worker_name = instance.assigned_worker.get_full_name() if instance.assigned_worker else 'Non assigné'
+            worker_name = instance.assigned_worker.get_full_name() if instance.assigned_worker else 'Non assigne'
             
             create_admin_notification(
                 notification_type='task_completed',
-                title=f'✅ Tâche terminée: {instance.title}',
+                title=f'Tache terminee: {instance.title}',
                 message=f'Client: {client_name} | Prestataire: {worker_name} | Budget: {instance.budget} MRU',
                 related_task=instance
             )
-
-
-# ============================================
-# Signal 6: Payment Pending (checked by Celery Task)
-# ============================================
-# هذا سيتم تنفيذه عبر Celery Task يومي (سأشرحه بعد قليل)
