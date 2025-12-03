@@ -1,7 +1,7 @@
 # users/serializers.py
 from rest_framework import serializers
 from django.contrib.auth import authenticate
-from .models import User, WorkerProfile, ClientProfile, AdminProfile
+from .models import User, WorkerProfile, ClientProfile, AdminProfile,SavedLocation
 from .utils import to_e164
 
 
@@ -341,3 +341,34 @@ class ChangePasswordSerializer(serializers.Serializer):
         if not user.check_password(value):
             raise serializers.ValidationError("كلمة المرور القديمة غير صحيحة")
         return value
+    
+class SavedLocationSerializer(serializers.ModelSerializer):
+    """
+    Serializer للمواقع المحفوظة
+    """
+    class Meta:
+        model = SavedLocation
+        fields = [
+            'id', 'name', 'address', 'latitude', 'longitude',
+            'emoji', 'usage_count', 'last_used_at', 
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'usage_count', 'last_used_at', 'created_at', 'updated_at']
+
+
+class SavedLocationCreateSerializer(serializers.ModelSerializer):
+    """
+    Serializer لإنشاء موقع محفوظ
+    """
+    class Meta:
+        model = SavedLocation
+        fields = ['name', 'address', 'latitude', 'longitude', 'emoji']
+
+
+class SavedLocationUpdateSerializer(serializers.ModelSerializer):
+    """
+    Serializer لتحديث اسم وإيموجي الموقع
+    """
+    class Meta:
+        model = SavedLocation
+        fields = ['name', 'emoji']

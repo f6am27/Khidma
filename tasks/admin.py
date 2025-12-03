@@ -51,9 +51,9 @@ class ServiceRequestAdmin(admin.ModelAdmin):
         'created_at',
         'updated_at',
         'accepted_at',
-        'work_started_at',
-        'work_completed_at',
-        'completed_at',
+        # 'work_started_at',
+        # 'work_completed_at',
+        # 'completed_at',
         'cancelled_at',
         'timeline_display',
         'location_display',
@@ -96,9 +96,9 @@ class ServiceRequestAdmin(admin.ModelAdmin):
             'fields': (
                 'created_at',
                 'accepted_at',
-                'work_started_at',
-                'work_completed_at',
-                'completed_at',
+                # 'work_started_at',
+                # 'work_completed_at',
+                # 'completed_at',
                 'cancelled_at',
                 'updated_at',
                 'timeline_display'
@@ -270,26 +270,26 @@ class ServiceRequestAdmin(admin.ModelAdmin):
                 'color': '#4CAF50'
             })
         
-        if obj.work_started_at:
-            timeline.append({
-                'event': 'Work Started',
-                'date': obj.work_started_at,
-                'color': '#FF9800'
-            })
+        # if obj.work_started_at:
+        #     timeline.append({
+        #         'event': 'Work Started',
+        #         'date': obj.work_started_at,
+        #         'color': '#FF9800'
+        #     })
         
-        if obj.work_completed_at:
-            timeline.append({
-                'event': 'Work Completed',
-                'date': obj.work_completed_at,
-                'color': '#9C27B0'
-            })
+        # if obj.work_completed_at:
+        #     timeline.append({
+        #         'event': 'Work Completed',
+        #         'date': obj.work_completed_at,
+        #         'color': '#9C27B0'
+        #     })
         
-        if obj.completed_at:
-            timeline.append({
-                'event': 'Task Completed',
-                'date': obj.completed_at,
-                'color': '#4CAF50'
-            })
+        # if obj.completed_at:
+        #     timeline.append({
+        #         'event': 'Task Completed',
+        #         'date': obj.completed_at,
+        #         'color': '#4CAF50'
+        #     })
         
         if obj.cancelled_at:
             timeline.append({

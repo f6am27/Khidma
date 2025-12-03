@@ -1,4 +1,4 @@
-# tasks/serializers.py
+#asks/serializers.py
 from rest_framework import serializers
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
@@ -82,30 +82,40 @@ class TaskApplicationSerializer(serializers.ModelSerializer):
 # قائمة طلبات الخدمة (لواجهة Flutter)
 # --------------------------------------------------
 class ServiceRequestListSerializer(serializers.ModelSerializer):
-    serviceType = serializers.CharField(source='service_category.name', read_only=True)
+    # ✅ معالجة service_category الاختياري
+    serviceType = serializers.SerializerMethodField()
     status = serializers.CharField(read_only=True)
     createdAt = serializers.DateTimeField(source='created_at', read_only=True)
     applicantsCount = serializers.IntegerField(source='applications_count', read_only=True)
     assignedProvider = serializers.SerializerMethodField()
+    providerPhone = serializers.SerializerMethodField() 
     providerRating = serializers.SerializerMethodField()
-    isUrgent = serializers.BooleanField(source='is_urgent', read_only=True)  
-    timeDescription = serializers.CharField(source='time_description', read_only=True, allow_null=True, required=False)  
-    workStartedAt = serializers.DateTimeField(source='work_started_at', read_only=True, allow_null=True) 
-    finalPrice = serializers.DecimalField(source='final_price', max_digits=10, decimal_places=2, read_only=True, allow_null=True)
-    client = serializers.IntegerField(source='client.id', read_only=True)  # ✅ جديد
-    client_phone = serializers.CharField(source='client.phone', read_only=True)  # ✅ جديد
+    isUrgent = serializers.BooleanField(source='is_urgent', read_only=True)
+    timeDescription = serializers.CharField(source='time_description', read_only=True, allow_null=True, required=False)
+    client = serializers.IntegerField(source='client.id', read_only=True)
+    client_phone = serializers.CharField(source='client.phone', read_only=True)
+    
+    # ❌ حذف: workStartedAt, finalPrice
+
     class Meta:
         model = ServiceRequest
         fields = [
-            'id', 'title', 'description', 'serviceType', 'budget', 'finalPrice',
+            'id', 'title', 'description', 'serviceType', 'budget',
             'location', 'preferredTime', 'status', 'createdAt',
-            'applicantsCount', 'assignedProvider', 'providerRating',
-            'isUrgent', 'timeDescription' , 'workStartedAt',
-        'client', 'client_phone'  
+            'applicantsCount', 'assignedProvider','providerPhone',  'providerRating',
+            'isUrgent', 'timeDescription',
+            'client', 'client_phone'
         ]
         extra_kwargs = {'preferredTime': {'source': 'preferred_time'}}
 
+    def get_serviceType(self, obj):
+        """✅ معالجة التصنيف الاختياري"""
+        if obj.service_category:
+            return obj.service_category.name
+        return "Non classifié"  # للمهام بدون تصنيف
+
     def get_assignedProvider(self, obj):
+        """✅ اسم العامل المُعيّن"""
         if obj.assigned_worker:
             user = obj.assigned_worker
             if hasattr(user, 'first_name') and user.first_name and hasattr(user, 'last_name') and user.last_name:
@@ -115,6 +125,12 @@ class ServiceRequestListSerializer(serializers.ModelSerializer):
             if hasattr(user, 'phone') and user.phone:
                 return user.phone
             return "Worker"
+        return None
+
+    def get_providerPhone(self, obj):
+        """✅ رقم هاتف العامل المُعيّن"""
+        if obj.assigned_worker:
+            return obj.assigned_worker.phone
         return None
 
     def get_providerRating(self, obj):
@@ -130,7 +146,7 @@ class ServiceRequestDetailSerializer(serializers.ModelSerializer):
     client_name = serializers.SerializerMethodField()
     client_phone = serializers.CharField(source='client.phone', read_only=True)
     service_category = ServiceCategorySerializer(read_only=True)
-    serviceType = serializers.CharField(source='service_category.name', read_only=True)
+    serviceType = serializers.SerializerMethodField()
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     createdAt = serializers.DateTimeField(source='created_at', read_only=True)
     applicantsCount = serializers.IntegerField(source='applications_count', read_only=True)
@@ -139,19 +155,26 @@ class ServiceRequestDetailSerializer(serializers.ModelSerializer):
     has_exact_coordinates = serializers.SerializerMethodField()
     location_type = serializers.SerializerMethodField()
     distance_from_worker = serializers.SerializerMethodField()
-    finalPrice = serializers.DecimalField(source='final_price', max_digits=10, decimal_places=2, read_only=True, allow_null=True)
+    
+    # ❌ حذف: finalPrice
 
     class Meta:
         model = ServiceRequest
         fields = [
             'id', 'title', 'description', 'serviceType', 'service_category',
-            'budget', 'final_price', 'finalPrice', 'location', 'preferred_time', 'preferredTime',
-            'latitude', 'longitude' ,'status', 'status_display', 'is_urgent', 
+            'budget', 'location', 'preferred_time', 'preferredTime',
+            'latitude', 'longitude', 'status', 'status_display', 'is_urgent', 
             'requires_materials', 'client_name', 'client_phone', 'createdAt', 
             'applicantsCount', 'assigned_worker_info', 'applications',
             'has_exact_coordinates', 'location_type', 'distance_from_worker'
         ]
         extra_kwargs = {'preferredTime': {'source': 'preferred_time'}}
+
+    def get_serviceType(self, obj):
+        """✅ معالجة التصنيف الاختياري"""
+        if obj.service_category:
+            return obj.service_category.name
+        return "Non classifié"
 
     def get_client_name(self, obj):
         user = obj.client
@@ -213,12 +236,33 @@ class ServiceRequestDetailSerializer(serializers.ModelSerializer):
         return round(distance, 1) if distance else None
 
 # --------------------------------------------------
-# إنشاء/تحديث طلب الخدمة مع دعم الموقع المحسن
+# إنشاء/تحديث طلب الخدمة - ✅ جميع الحقول الاختيارية
 # --------------------------------------------------
 class ServiceRequestCreateSerializer(serializers.ModelSerializer):
-    service_category_id = serializers.IntegerField(write_only=True)
+    # ✅ service_category أصبح اختياري تماماً
+    service_category_id = serializers.IntegerField(
+        write_only=True,
+        required=False,  # ✅ اختياري
+        allow_null=True  # ✅ يمكن أن يكون null
+    )
     serviceType = serializers.CharField(write_only=True, required=False)
-    preferredTime = serializers.CharField(source='preferred_time', required=False)
+    
+    # ✅ preferredTime أصبح اختياري
+    preferredTime = serializers.CharField(
+        source='preferred_time',
+        required=False,
+        allow_blank=True,
+        allow_null=True
+    )
+    
+    # ✅ timeDescription أصبح اختياري
+    timeDescription = serializers.CharField(
+        source='time_description',
+        required=False,
+        allow_blank=True,
+        allow_null=True
+    )
+    
     latitude = serializers.DecimalField(max_digits=10, decimal_places=7, required=False, allow_null=True, help_text="خط العرض")
     longitude = serializers.DecimalField(max_digits=11, decimal_places=7, required=False, allow_null=True, help_text="خط الطول")
     location_method = serializers.ChoiceField(
@@ -232,16 +276,24 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
         fields = [
             'title', 'description', 'serviceType', 'service_category_id',
             'budget', 'location', 'latitude', 'longitude', 
-            'preferred_time', 'preferredTime', 'is_urgent', 'requires_materials',
+            'preferred_time', 'preferredTime', 'timeDescription',
+            'is_urgent', 'requires_materials',
             'location_method', 'area_id'
         ]
 
     def validate(self, data):
+        """✅ التحقق من البيانات مع السماح بالتصنيف الفارغ"""
         location_method = data.get('location_method', 'select_area')
         latitude = data.get('latitude')
         longitude = data.get('longitude')
         area_id = data.get('area_id')
         location = data.get('location')
+        service_category_id = data.get('service_category_id')
+
+        # ✅ إذا لم يتم تحديد تصنيف - نحذر المستخدم لكن نسمح بالنشر
+        if not service_category_id:
+            # سيتم التعامل معه في create()
+            pass
 
         if location_method == 'current_location':
             if latitude is None or longitude is None:
@@ -271,12 +323,14 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
         
         time_desc = request.data.get('timeDescription') or request.data.get('time_description')
 
+        # ✅ معالجة service_category الاختياري
         if service_type and 'service_category_id' not in validated_data:
             from services.models import ServiceCategory
             try:
                 category = ServiceCategory.objects.get(name=service_type, is_active=True)
                 validated_data['service_category_id'] = category.id
             except ServiceCategory.DoesNotExist:
+                # ✅ إذا لم نجد التصنيف، نتركه فارغ
                 pass
 
         latitude = validated_data.pop('latitude', None)
@@ -296,7 +350,9 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
         
         service_request.save()
 
-        self._notify_relevant_workers(service_request, location_method)
+        # ✅ إشعار العمال (فقط إذا كان هناك تصنيف)
+        if service_request.service_category:
+            self._notify_relevant_workers(service_request, location_method)
 
         return service_request
     
@@ -307,6 +363,9 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
             category_id = request.data.get('service_category_id')
             if category_id:
                 instance.service_category_id = category_id
+            else:
+                # ✅ يمكن إزالة التصنيف
+                instance.service_category = None
         
         if request:
             time_desc = request.data.get('timeDescription') or request.data.get('time_description')
@@ -326,22 +385,23 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
     def _notify_relevant_workers(self, task, location_method):
         """
         إشعار العمال المناسبين بمهمة جديدة
-        Notify relevant workers about new task
         """
         from users.models import User
         from notifications.utils import notify_new_task_available
         
-        # جلب جميع العمال المؤهلين في نفس الفئة
+        # ✅ فقط إذا كان هناك تصنيف
+        if not task.service_category:
+            return 0
+        
         relevant_workers = User.objects.filter(
             role='worker',
             is_verified=True,
             onboarding_completed=True,
             worker_profile__is_available=True,
-            worker_profile__service_category=task.service_category  
-            ).distinct()
-        # تحديد العمال المستهدفين بناءً على طريقة الموقع
+            worker_profile__service_category=task.service_category
+        ).distinct()
+        
         if task.latitude and task.longitude and location_method == 'current_location':
-            # إذا العميل استخدم GPS، أرسل للعمال القريبين فقط (30 كم)
             nearby_workers = []
             for worker in relevant_workers:
                 if hasattr(worker, 'worker_profile') and \
@@ -355,10 +415,8 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
                         nearby_workers.append(worker)
             workers_to_notify = nearby_workers[:20]
         else:
-            # إذا العميل اختار منطقة، أرسل لجميع العمال في نفس الفئة
             workers_to_notify = list(relevant_workers[:50])
 
-        # إرسال إشعارات مع Firebase
         notifications_sent = 0
         for worker in workers_to_notify:
             try:
@@ -373,14 +431,15 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
         
         print(f"📢 Notified {notifications_sent}/{len(workers_to_notify)} workers")
         return notifications_sent
+
 # --------------------------------------------------
 # محول المهام المتاحة للعمال
 # --------------------------------------------------
 class AvailableTaskSerializer(serializers.ModelSerializer):
     client_name = serializers.SerializerMethodField()
     client_rating = serializers.SerializerMethodField()
-    serviceType = serializers.CharField(source='service_category.name', read_only=True)
-    category = serializers.CharField(source='service_category.name', read_only=True)
+    serviceType = serializers.SerializerMethodField()
+    category = serializers.SerializerMethodField()
     createdAt = serializers.DateTimeField(source='created_at', read_only=True)
     applicantsCount = serializers.IntegerField(source='applications_count', read_only=True)
     distance_from_worker = serializers.SerializerMethodField()
@@ -399,6 +458,18 @@ class AvailableTaskSerializer(serializers.ModelSerializer):
             'has_applied', 'application_status',
             'latitude', 'longitude', 'client', 'client_phone' 
         ]
+
+    def get_serviceType(self, obj):
+        """✅ معالجة التصنيف الاختياري"""
+        if obj.service_category:
+            return obj.service_category.name
+        return "Non classifié"
+
+    def get_category(self, obj):
+        """✅ معالجة التصنيف الاختياري"""
+        if obj.service_category:
+            return obj.service_category.name
+        return "Non classifié"
 
     def get_client_name(self, obj):
         user = obj.client
@@ -501,8 +572,8 @@ class TaskNotificationSerializer(serializers.ModelSerializer):
 
 
 class TaskMapDataSerializer(serializers.ModelSerializer):
-    category = serializers.CharField(source='service_category.name', read_only=True)
-    category_icon = serializers.CharField(source='service_category.icon', read_only=True)
+    category = serializers.SerializerMethodField()
+    category_icon = serializers.SerializerMethodField()
     distance_km = serializers.SerializerMethodField()
     client_initial = serializers.SerializerMethodField()
     urgency_level = serializers.SerializerMethodField()
@@ -515,6 +586,18 @@ class TaskMapDataSerializer(serializers.ModelSerializer):
             'client_initial', 'urgency_level', 'created_at', 'requires_materials'
         ]
     
+    def get_category(self, obj):
+        """✅ معالجة التصنيف الاختياري"""
+        if obj.service_category:
+            return obj.service_category.name
+        return "Non classifié"
+
+    def get_category_icon(self, obj):
+        """✅ معالجة التصنيف الاختياري"""
+        if obj.service_category:
+            return obj.service_category.icon
+        return "help_outline"  # أيقونة افتراضية
+
     def get_distance_km(self, obj):
         request = self.context.get('request')
         if not request or request.user.role != 'worker':

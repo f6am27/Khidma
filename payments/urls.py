@@ -1,54 +1,54 @@
 # payments/urls.py
+"""
+URLs لنظام عداد المهام والاشتراكات
+"""
+
 from django.urls import path
 from . import views
 
 app_name = 'payments'
 
 urlpatterns = [
-    # ============================================
-    # MOOSYL PAYMENT ENDPOINTS (NEW)
-    # ============================================
+    # ================================
+    # 1️⃣ APIs نظام عداد المهام
+    # ================================
     
-    # إنشاء طلب دفع إلكتروني
-    path(
-        'moosyl/initiate/',
-        views.InitiateMoosylPaymentView.as_view(),
-        name='moosyl-initiate'
-    ),
+    # التحقق من الحد (للجميع)
+    path('check-limit/', views.check_task_limit, name='check_task_limit'),
     
-    # التحقق من حالة الدفع
-    path(
-        'moosyl/verify/<int:payment_id>/',
-        views.VerifyMoosylPaymentView.as_view(),
-        name='moosyl-verify'
-    ),
+    # عرض تفاصيل العداد (للمستخدم)
+    path('my-counter/', views.my_task_counter, name='my_task_counter'),
     
-    # Webhook من Moosyl
-    path(
-        'moosyl/webhook/',
-        views.moosyl_webhook,
-        name='moosyl-webhook'
-    ),
+    # إحصائيات (Admin فقط)
+    path('stats/', views.task_counter_stats, name='task_counter_stats'),
     
-    # ============================================
-    # ORIGINAL ENDPOINTS
-    # ============================================
+    # ================================
+    # 2️⃣ APIs الاشتراكات
+    # ================================
     
-    # List and create payments
-    path('', views.PaymentListCreateView.as_view(), name='payment-list-create'),
+    # بدء اشتراك (معطل - ينتظر Benkily)
+    path('subscribe/', views.initiate_subscription, name='initiate_subscription'),
     
-    # Get specific payment details
-    path('<int:pk>/', views.PaymentDetailView.as_view(), name='payment-detail'),
+    # تاريخ الاشتراكات
+    path('my-subscriptions/', views.my_subscriptions, name='my_subscriptions'),
     
-    # Get my payments (made or received)
-    path('my-payments/', views.MyPaymentsView.as_view(), name='my-payments'),
+    # Webhook من Benkily (معطل)
+    path('benkily/webhook/', views.benkily_webhook, name='benkily_webhook'),
     
-    # Get payments received (workers only)
-    path('received/', views.ReceivedPaymentsView.as_view(), name='received-payments'),
+    # ================================
+    # 3️⃣ APIs Admin (تحكم يدوي)
+    # ================================
     
-    # Get payment statistics
-    path('statistics/', views.payment_statistics, name='statistics'),
+    # تفعيل اشتراك يدوياً
+    path('admin/activate/<int:user_id>/', views.activate_subscription_manual, name='activate_subscription_manual'),
     
-    # Get payment history with filters
-    path('history/', views.payment_history, name='history'),
+    # إعادة تعيين العداد
+    path('admin/reset/<int:user_id>/', views.reset_counter_manual, name='reset_counter_manual'),
+    
+    # ================================
+    # 4️⃣ API قديمة (للتوافق)
+    # ================================
+    
+    # إشعار بتعطيل نظام الدفع القديم
+    path('disabled/', views.payment_system_disabled, name='payment_system_disabled'),
 ]

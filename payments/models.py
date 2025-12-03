@@ -1,90 +1,144 @@
 # payments/models.py
+"""
+نماذج نظام الدفع والاشتراكات
+تم التحديث: إضافة نظام تتبع IDs المهام
+"""
+
 from django.db import models
-from django.core.validators import MinValueValidator
-from users.models import User
-from tasks.models import ServiceRequest
+from django.conf import settings
 
 
-class Payment(models.Model):
+class UserTaskCounter(models.Model):
     """
-    Payment transaction model
-    Record all payments between clients and workers
+    عداد المهام المجانية لكل مستخدم (عميل أو عامل)
+    
+    النظام:
+    - 5 مهام مجانية لكل مستخدم
+    - بعد استنفاد الحد: اشتراك شهري مطلوب
+    - تتبع IDs المهام لمنع الحساب المزدوج
     """
     
-    task = models.OneToOneField(
-        ServiceRequest,
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name='payment'
+        related_name='task_counter'
     )
     
-    payer = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='payments_made',
-        limit_choices_to={'role': 'client'}
+    accepted_tasks_count = models.IntegerField(
+        default=0,
+        help_text="عدد المهام المقبولة (للعميل أو العامل)"
     )
     
-    receiver = models.ForeignKey(
-        User,
+    # ✅ جديد: قائمة IDs المهام المحسوبة
+    counted_task_ids = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="قائمة IDs المهام التي تم حسابها (لمنع الحساب المزدوج)"
+    )
+    
+    last_payment_date = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="تاريخ آخر دفع للاشتراك"
+    )
+    
+    last_reset_date = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="تاريخ آخر إعادة تعيين للعداد"
+    )
+    
+    is_premium = models.BooleanField(
+        default=False,
+        help_text="هل المستخدم مشترك (premium)؟"
+    )
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = "عداد المهام"
+        verbose_name_plural = "عدادات المهام"
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"{self.user.phone} - {self.accepted_tasks_count}/5 مهام"
+    
+    def increment_counter(self):
+        """زيادة عداد المهام المقبولة"""
+        self.accepted_tasks_count += 1
+        self.save()
+    
+    def reset_counter(self):
+        """إعادة تعيين العداد بعد الدفع"""
+        from django.utils import timezone
+        self.accepted_tasks_count = 0
+        self.counted_task_ids = []  # ✅ إعادة تعيين القائمة
+        self.last_payment_date = timezone.now()
+        self.last_reset_date = timezone.now()
+        self.save()
+    
+    @property
+    def needs_payment(self):
+        """
+        هل يحتاج المستخدم للدفع؟
+        True = وصل للحد المجاني وليس premium
+        """
+        FREE_TASK_LIMIT = getattr(settings, 'FREE_TASK_LIMIT', 5)
+        return self.accepted_tasks_count >= FREE_TASK_LIMIT and not self.is_premium
+    
+    @property
+    def tasks_remaining_before_payment(self):
+        """عدد المهام المتبقية قبل طلب الاشتراك"""
+        FREE_TASK_LIMIT = getattr(settings, 'FREE_TASK_LIMIT', 5)
+        if self.is_premium:
+            return float('inf')  # لا حدود للمشتركين
+        remaining = FREE_TASK_LIMIT - self.accepted_tasks_count
+        return max(0, remaining)
+
+
+class PlatformSubscription(models.Model):
+    """
+    اشتراك شهري للمنصة (معطل حالياً - ينتظر ربط Benkily)
+    
+    السعر المقترح: 8 MRU/شهر (800 centime)
+    """
+    
+    PAYMENT_METHOD_CHOICES = [
+        ('benkily', 'Benkily'),
+        ('other', 'Other'),
+    ]
+    
+    STATUS_CHOICES = [
+        ('pending', 'قيد الانتظار'),
+        ('completed', 'مكتمل'),
+        ('failed', 'فشل'),
+    ]
+    
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name='payments_received',
-        limit_choices_to={'role': 'worker'}
+        related_name='subscriptions'
     )
     
     amount = models.DecimalField(
         max_digits=10,
         decimal_places=2,
-        validators=[MinValueValidator(0)]
+        help_text="المبلغ بالمليم (centime). مثال: 800.00"
     )
-    
-    PAYMENT_METHOD_CHOICES = [
-        ('cash', 'Espèces'),
-        ('bankily', 'Bankily'),
-        ('sedad', 'Sedad'),
-        ('masrivi', 'Masrivi'),
-    ]
     
     payment_method = models.CharField(
         max_length=20,
         choices=PAYMENT_METHOD_CHOICES,
-        default='cash'
+        default='benkily'
     )
     
     transaction_id = models.CharField(
-        max_length=100,
-        null=True,
-        blank=True,
-        unique=True
-    )
-    
-    # ✅ معلومات Moosyl (للمدفوعات الإلكترونية)
-    moosyl_transaction_id = models.CharField(
-        max_length=100,
-        null=True,
-        blank=True,
-        unique=True,
-        help_text="معرف المعاملة من Moosyl"
-    )
-    
-    moosyl_response = models.JSONField(
-        null=True,
-        blank=True,
-        help_text="الاستجابة الكاملة من Moosyl"
-    )
-    
-    failure_reason = models.TextField(
+        max_length=255,
         blank=True,
         null=True,
-        help_text="سبب الفشل إن وجد"
+        help_text="معرف المعاملة من Benkily"
     )
-    
-    STATUS_CHOICES = [
-        ('pending', 'En attente'),
-        ('processing', 'En cours'),
-        ('completed', 'Terminé'),
-        ('failed', 'Échoué'),
-        ('cancelled', 'Annulé'),
-    ]
     
     status = models.CharField(
         max_length=20,
@@ -92,64 +146,19 @@ class Payment(models.Model):
         default='pending'
     )
     
-    notes = models.TextField(
+    valid_until = models.DateTimeField(
+        null=True,
         blank=True,
-        null=True
+        help_text="صالح حتى (30 يوم من تاريخ الدفع)"
     )
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
     
     class Meta:
+        verbose_name = "اشتراك"
+        verbose_name_plural = "اشتراكات"
         ordering = ['-created_at']
-        verbose_name = "Payment"
-        verbose_name_plural = "Payments"
-        indexes = [
-            models.Index(fields=['payer', '-created_at']),
-            models.Index(fields=['receiver', '-created_at']),
-            models.Index(fields=['status']),
-            models.Index(fields=['moosyl_transaction_id']),
-        ]
     
     def __str__(self):
-        payer_name = self.payer.get_full_name() or self.payer.phone
-        receiver_name = self.receiver.get_full_name() or self.receiver.phone
-        return f"Payment: {self.amount} MRU - {payer_name} to {receiver_name}"
-    
-    def save(self, *args, **kwargs):
-        """تحديث timestamp عند الحفظ"""
-        if self.status == 'completed' and not self.completed_at:
-            from django.utils import timezone
-            self.completed_at = timezone.now()
-        super().save(*args, **kwargs)
-    
-    @property
-    def is_completed(self):
-        """التحقق من اكتمال الدفع"""
-        return self.status == 'completed'
-    
-    @property
-    def is_electronic_payment(self):
-        """التحقق من أن الدفع إلكتروني (عبر Moosyl)"""
-        return self.payment_method in ['bankily', 'sedad', 'masrivi']
-    
-    @property
-    def payment_method_display(self):
-        """عرض طريقة الدفع بشكل مقروء"""
-        return dict(self.PAYMENT_METHOD_CHOICES).get(self.payment_method)
-    
-    def mark_as_completed(self, moosyl_transaction_id=None):
-        """تمييز الدفع كمكتمل"""
-        from django.utils import timezone
-        self.status = 'completed'
-        self.completed_at = timezone.now()
-        if moosyl_transaction_id:
-            self.moosyl_transaction_id = moosyl_transaction_id
-        self.save()
-    
-    def mark_as_failed(self, reason=""):
-        """تمييز الدفع كفاشل"""
-        self.status = 'failed'
-        self.failure_reason = reason
-        self.save()
+        return f"{self.user.phone} - {self.amount} MRU - {self.status}"

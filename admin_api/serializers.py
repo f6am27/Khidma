@@ -2,7 +2,7 @@
 from rest_framework import serializers
 from users.models import User, AdminProfile,WorkerProfile, ClientProfile
 from tasks.models import ServiceRequest, TaskApplication, TaskReview
-from payments.models import Payment
+# from payments.models import Payment
 from chat.models import Report, Conversation, Message
 from services.models import ServiceCategory, NouakchottArea
 from django.db.models import Count, Sum, Avg, Q
@@ -172,7 +172,6 @@ class AdminUserDetailSerializer(serializers.ModelSerializer):
         
         return None
 
-    
     def get_statistics(self, obj):
         if obj.role == 'client':
             tasks = ServiceRequest.objects.filter(client=obj)
@@ -180,22 +179,17 @@ class AdminUserDetailSerializer(serializers.ModelSerializer):
                 'total_tasks': tasks.count(),
                 'completed_tasks': tasks.filter(status='completed').count(),
                 'cancelled_tasks': tasks.filter(status='cancelled').count(),
-                'total_spent': float(Payment.objects.filter(
-                    payer=obj, status='completed'
-                ).aggregate(Sum('amount'))['amount__sum'] or 0)
+                'total_spent': 0  # ❌ معطل مؤقتاً
             }
         elif obj.role == 'worker':
             tasks = ServiceRequest.objects.filter(assigned_worker=obj)
             return {
                 'total_jobs': tasks.count(),
                 'completed_jobs': tasks.filter(status='completed').count(),
-                'total_earned': float(Payment.objects.filter(
-                    receiver=obj, status='completed'
-                ).aggregate(Sum('amount'))['amount__sum'] or 0),
+                'total_earned': 0,  # ❌ معطل مؤقتاً
                 'average_rating': float(obj.worker_profile.average_rating) if hasattr(obj, 'worker_profile') else 0
             }
         return {}
-
 
 class UserSuspensionSerializer(serializers.Serializer):
     """تعليق/إلغاء تعليق المستخدم"""

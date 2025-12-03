@@ -9,7 +9,7 @@ from datetime import timedelta
 from django.shortcuts import get_object_or_404
 from users.models import User, WorkerProfile, ClientProfile,AdminProfile
 from tasks.models import ServiceRequest, TaskApplication, TaskReview
-from payments.models import Payment
+# from payments.models import Payment  # ❌ معطل مؤقتاً
 from chat.models import Report, Conversation, Message
 from services.models import ServiceCategory, NouakchottArea
 from notifications.models import Notification,NotificationSettings
@@ -95,7 +95,7 @@ class AdminLoginView(APIView):
                 'first_name': user.first_name,
                 'last_name': user.last_name,
                 'role': getattr(user, 'role', 'admin'),
-                'is_online': admin_profile.is_online,  # ✅ أضف
+                'is_online': admin_profile.is_online,
             }
         })
 
@@ -124,19 +124,10 @@ def dashboard_stats(request):
     completed_tasks = ServiceRequest.objects.filter(status='completed').count()
     cancelled_tasks = ServiceRequest.objects.filter(status='cancelled').count()
     
-    # Financial Stats
-    total_revenue = Payment.objects.filter(
-        status='completed'
-    ).aggregate(Sum('amount'))['amount__sum'] or 0
-    
-    revenue_this_month = Payment.objects.filter(
-        status='completed',
-        completed_at__gte=month_start
-    ).aggregate(Sum('amount'))['amount__sum'] or 0
-    
-    average_task_value = Payment.objects.filter(
-        status='completed'
-    ).aggregate(Avg('amount'))['amount__avg'] or 0
+    # ❌ Financial Stats - معطل مؤقتاً
+    total_revenue = 0
+    revenue_this_month = 0
+    average_task_value = 0
     
     # Reports Stats
     pending_reports = Report.objects.filter(status='pending').count()
@@ -213,7 +204,7 @@ class AdminUserListView(generics.ListAPIView):
         return queryset.order_by('-date_joined')
 
 
-class AdminUserDetailView(generics.RetrieveDestroyAPIView):  # ✅ غيرنا من RetrieveAPIView
+class AdminUserDetailView(generics.RetrieveDestroyAPIView):
     """تفاصيل المستخدم + الحذف"""
     serializer_class = AdminUserDetailSerializer
     permission_classes = [permissions.IsAdminUser]
@@ -226,7 +217,6 @@ class AdminUserDetailView(generics.RetrieveDestroyAPIView):  # ✅ غيرنا م
         user_id = instance.id
         user_name = instance.get_full_name() or instance.phone
         
-        # حذف المستخدم
         self.perform_destroy(instance)
         
         return Response({
@@ -259,7 +249,6 @@ def suspend_user(request, user_id):
         user.suspended_until = timezone.now() + timedelta(days=days)
         user.suspension_reason = reason or f'تعليق {days} يوم من الإدارة'
     
-    # ✅ التعديل الأول: إضافة update_fields
     user.save(update_fields=['is_suspended', 'suspension_reason', 'suspended_until'])
     
     return Response({
@@ -280,7 +269,6 @@ def unsuspend_user(request, user_id):
     user.suspended_until = None
     user.suspension_reason = ''
     
-    # ✅ التعديل الثاني: إضافة update_fields
     user.save(update_fields=['is_suspended', 'suspension_reason', 'suspended_until'])
     
     return Response({
@@ -370,7 +358,6 @@ def handle_report(request, report_id):
             user.suspension_reason = f'حظر نهائي - بلاغ #{report.id}'
             days = 'permanent'
         
-        # ✅ التعديل الثالث: إضافة update_fields
         user.save(update_fields=['is_suspended', 'suspension_reason', 'suspended_until'])
         
         report.status = 'resolved'
@@ -421,77 +408,12 @@ class AdminAreaDetailView(generics.RetrieveUpdateDestroyAPIView):
 @api_view(['GET'])
 @permission_classes([permissions.IsAdminUser])
 def financial_summary(request):
-    """ملخص مالي"""
-    
-    now = timezone.now()
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    last_month_start = (month_start - timedelta(days=1)).replace(day=1)
-    
-    # Total transactions
-    total_transactions = Payment.objects.count()
-    completed_transactions = Payment.objects.filter(status='completed').count()
-    
-    # Revenue
-    total_revenue = Payment.objects.filter(
-        status='completed'
-    ).aggregate(Sum('amount'))['amount__sum'] or 0
-    
-    revenue_this_month = Payment.objects.filter(
-        status='completed',
-        completed_at__gte=month_start
-    ).aggregate(Sum('amount'))['amount__sum'] or 0
-    
-    revenue_last_month = Payment.objects.filter(
-        status='completed',
-        completed_at__gte=last_month_start,
-        completed_at__lt=month_start
-    ).aggregate(Sum('amount'))['amount__sum'] or 0
-    
-    average_transaction_value = Payment.objects.filter(
-        status='completed'
-    ).aggregate(Avg('amount'))['amount__avg'] or 0
-    
-    # Top earning workers
-    top_workers = Payment.objects.filter(
-        status='completed'
-    ).values('receiver__id', 'receiver__first_name', 'receiver__last_name', 'receiver__phone').annotate(
-        total_earned=Sum('amount')
-    ).order_by('-total_earned')[:10]
-    
-    top_earning_workers = [
-        {
-            'id': worker['receiver__id'],
-            'name': f"{worker['receiver__first_name']} {worker['receiver__last_name']}" if worker['receiver__first_name'] else worker['receiver__phone'],
-            'total_earned': float(worker['total_earned'])
-        }
-        for worker in top_workers
-    ]
-    
-    # Revenue by category
-    revenue_by_cat = Payment.objects.filter(
-        status='completed'
-    ).values('task__service_category__name').annotate(
-        revenue=Sum('amount')
-    ).order_by('-revenue')
-    
-    revenue_by_category = {
-        item['task__service_category__name']: float(item['revenue'])
-        for item in revenue_by_cat if item['task__service_category__name']
-    }
-    
-    data = {
-        'total_transactions': total_transactions,
-        'completed_transactions': completed_transactions,
-        'total_revenue': total_revenue,
-        'revenue_this_month': revenue_this_month,
-        'revenue_last_month': revenue_last_month,
-        'average_transaction_value': average_transaction_value,
-        'top_earning_workers': top_earning_workers,
-        'revenue_by_category': revenue_by_category
-    }
-    
-    serializer = FinancialSummarySerializer(data)
-    return Response(serializer.data)
+    """❌ ملخص مالي - معطل مؤقتاً"""
+    return Response({
+        'message': 'نظام التقارير المالية معطل مؤقتاً',
+        'note': 'سيتم تفعيله مع نظام الاشتراك الشهري'
+    }, status=status.HTTP_501_NOT_IMPLEMENTED)
+
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAdminUser])
@@ -583,10 +505,8 @@ def admin_profile(request):
         }, status=status.HTTP_403_FORBIDDEN)
     
     if request.method == 'GET':
-        # جلب البيانات
         serializer = AdminProfileSerializer(user, context={'request': request})
         
-        # إضافة بيانات AdminProfile إذا كانت موجودة
         data = serializer.data
         if hasattr(user, 'admin_profile'):
             profile = user.admin_profile
@@ -602,18 +522,16 @@ def admin_profile(request):
         }, status=status.HTTP_200_OK)
     
     elif request.method == 'PUT':
-        # تحديث البيانات
         serializer = AdminProfileUpdateSerializer(
             user, 
             data=request.data, 
-            partial=True,  # السماح بتحديث جزئي
+            partial=True,
             context={'request': request}
         )
         
         if serializer.is_valid():
             serializer.save()
             
-            # إرجاع البيانات المحدثة
             response_serializer = AdminProfileSerializer(user, context={'request': request})
             response_data = response_serializer.data
             
@@ -623,7 +541,6 @@ def admin_profile(request):
                 response_data['bio'] = profile.bio
                 response_data['department'] = profile.department
             
-            # تحديث localStorage في الفرونت
             return Response({
                 'success': True,
                 'message': 'Profil mis à jour avec succès',
@@ -641,17 +558,9 @@ def admin_change_password(request):
     """
     تغيير كلمة مرور الأدمن
     POST /api/admin/change-password/
-    
-    Body:
-    {
-        "old_password": "...",
-        "new_password": "...",
-        "new_password_confirm": "..."
-    }
     """
     user = request.user
     
-    # التحقق من أن المستخدم أدمن
     if user.role != 'admin':
         return Response({
             'success': False,
@@ -669,7 +578,6 @@ def admin_change_password(request):
             'errors': serializer.errors
         }, status=status.HTTP_400_BAD_REQUEST)
     
-    # تغيير كلمة المرور
     user.set_password(serializer.validated_data['new_password'])
     user.save()
     
@@ -686,8 +594,6 @@ def admin_password_reset_request(request):
     """
     طلب إعادة تعيين كلمة المرور
     POST /api/admin/password-reset-request/
-    
-    Body: { "email": "...", "language": "fr" }
     """
     serializer = AdminPasswordResetRequestSerializer(data=request.data)
     
@@ -700,13 +606,8 @@ def admin_password_reset_request(request):
     email = serializer.validated_data['email']
     language = serializer.validated_data.get('language', 'fr')
     
-    # توليد OTP
     otp = generate_otp()
-    
-    # حفظ في cache
     store_otp(email, otp)
-    
-    # إرسال عبر Email
     email_sent = send_password_reset_email(email, otp, language)
     
     if not email_sent:
@@ -727,13 +628,6 @@ def admin_password_reset_confirm(request):
     """
     تأكيد إعادة التعيين وتغيير كلمة المرور
     POST /api/admin/password-reset-confirm/
-    
-    Body: {
-        "email": "...",
-        "otp": "123456",
-        "new_password": "...",
-        "new_password_confirm": "..."
-    }
     """
     serializer = AdminPasswordResetConfirmSerializer(data=request.data)
     
@@ -747,7 +641,6 @@ def admin_password_reset_confirm(request):
     otp = serializer.validated_data['otp']
     new_password = serializer.validated_data['new_password']
     
-    # التحقق من OTP
     valid, message = verify_otp(email, otp)
     
     if not valid:
@@ -756,13 +649,10 @@ def admin_password_reset_confirm(request):
             'error': message
         }, status=status.HTTP_400_BAD_REQUEST)
     
-    # تحديث كلمة المرور
     try:
         user = User.objects.get(email=email, role='admin')
         user.set_password(new_password)
         user.save()
-        
-        # حذف OTP
         clear_otp(email)
         
         return Response({
@@ -783,9 +673,6 @@ def admin_notifications(request):
     """
     قائمة إشعارات الأدمن
     GET /api/admin/notifications/
-    Query params:
-    - is_read: true/false
-    - limit: عدد النتائج (افتراضي 20)
     """
     user = request.user
     
@@ -795,18 +682,15 @@ def admin_notifications(request):
             'error': 'Non autorisé'
         }, status=status.HTTP_403_FORBIDDEN)
     
-    # الحصول على الإشعارات
     notifications = Notification.objects.filter(
         recipient=user
     ).order_by('-created_at')
     
-    # فلترة حسب حالة القراءة
     is_read = request.query_params.get('is_read')
     if is_read is not None:
         is_read_bool = is_read.lower() == 'true'
         notifications = notifications.filter(is_read=is_read_bool)
     
-    # الحد من النتائج
     limit = int(request.query_params.get('limit', 20))
     notifications = notifications[:limit]
     
@@ -913,12 +797,10 @@ def admin_mark_all_read(request):
 class AdminNotificationSettingsView(generics.RetrieveUpdateAPIView):
     """
     إعدادات الإشعارات للأدمن
-    Admin notification settings
     """
     permission_classes = [permissions.IsAdminUser]
     
     def get_object(self):
-        """الحصول على إعدادات الإشعارات أو إنشاؤها"""
         settings, created = NotificationSettings.objects.get_or_create(
             user=self.request.user,
             defaults={'notifications_enabled': True}

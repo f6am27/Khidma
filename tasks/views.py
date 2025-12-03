@@ -1,4 +1,4 @@
-# tasks/views.py
+#tasks/views.py
 from rest_framework import generics, status, permissions, serializers
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
@@ -11,7 +11,7 @@ import random
 from math import radians, cos, sin, asin, sqrt
 
 from .models import ServiceRequest, TaskApplication, TaskReview, TaskNotification
-from notifications.utils import notify_new_task_available,notify_task_published
+from notifications.utils import notify_new_task_available, notify_task_published
 from .serializers import (
     ServiceRequestListSerializer,
     ServiceRequestDetailSerializer, 
@@ -31,6 +31,7 @@ class ServiceRequestCreateView(generics.CreateAPIView):
     """
     Create new service request (for clients)
     إنشاء طلب خدمة جديد (للعملاء)
+    ✅ مع دعم service_category الاختياري
     """
     queryset = ServiceRequest.objects.all()
     serializer_class = ServiceRequestCreateSerializer
@@ -39,13 +40,53 @@ class ServiceRequestCreateView(generics.CreateAPIView):
     def perform_create(self, serializer):
         if self.request.user.role != 'client':
             raise PermissionDenied("Only clients can create service requests")
+        
         service_request = serializer.save()
+        
+        # ✅ حفظ الموقع تلقائياً إذا كان GPS
+        if service_request.latitude and service_request.longitude:
+            from users.models import SavedLocation
+            from django.utils import timezone
+            
+            # تقريب الإحداثيات
+            lat_rounded = round(float(service_request.latitude), 5)
+            lng_rounded = round(float(service_request.longitude), 5)
+            
+            # تحقق من وجود الموقع أو أنشئه
+            saved_location, created = SavedLocation.objects.get_or_create(
+                user=self.request.user,
+                latitude=lat_rounded,
+                longitude=lng_rounded,
+                defaults={
+                    'address': service_request.location or 'موقع GPS',
+                    'usage_count': 1,
+                }
+            )
+            
+            if not created:
+                # الموقع موجود → زيادة العداد
+                saved_location.usage_count += 1
+                saved_location.last_used_at = timezone.now()
+                saved_location.save(update_fields=['usage_count', 'last_used_at'])
+        
+        # ✅ تحذير إذا لم يتم تحديد تصنيف
+        warning_message = None
+        if not service_request.service_category:
+            warning_message = "⚠️ Votre tâche a été publiée sans catégorie. Cela peut réduire le nombre de candidatures."
         
         # ✅ إشعار العميل بنشر المهمة بنجاح
         from notifications.utils import notify_task_published
         notify_task_published(client_user=self.request.user, task=service_request)
+        
+        # ✅ إعادة response مع تحذير إن وجد
+        if warning_message:
+            return Response({
+                'message': warning_message,
+                'task': ServiceRequestDetailSerializer(service_request, context={'request': self.request}).data
+            }, status=status.HTTP_201_CREATED)
+        
         return service_request
-    
+
 class ClientTasksListView(generics.ListAPIView):
     """
     Get my tasks - works for both client and worker
@@ -60,19 +101,18 @@ class ClientTasksListView(generics.ListAPIView):
     def get_queryset(self):
         user = self.request.user
         
-        # Client: return tasks created by them
         if user.role == 'client':
             return ServiceRequest.objects.filter(
                 client=user
             ).select_related('service_category', 'assigned_worker')
         
-        # Worker: return tasks assigned to them
         elif user.role == 'worker':
             return ServiceRequest.objects.filter(
                 assigned_worker=user
             ).select_related('service_category', 'client')
         
         return ServiceRequest.objects.none()
+
 
 class ServiceRequestDetailView(generics.RetrieveAPIView):
     serializer_class = ServiceRequestDetailSerializer
@@ -117,7 +157,6 @@ class ServiceRequestUpdateView(generics.UpdateAPIView):
                 )
 
 
-
 class AvailableTasksListView(generics.ListAPIView):
     serializer_class = AvailableTaskSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -131,9 +170,12 @@ class AvailableTasksListView(generics.ListAPIView):
             status='published'
         ).select_related('client', 'service_category')
         
+        # ✅ فلترة التصنيف (مع السماح بـ "Non classifié")
         category = self.request.query_params.get('category')
-        if category:
+        if category and category not in ['Tous', 'All', 'Non classifié']:
             queryset = queryset.filter(service_category__name__icontains=category)
+        elif category == 'Non classifié':
+            queryset = queryset.filter(service_category__isnull=True)
         
         location = self.request.query_params.get('location')
         if location:
@@ -169,10 +211,9 @@ class AvailableTasksListView(generics.ListAPIView):
                             worker_lat, worker_lng,
                             float(task.latitude), float(task.longitude)
                         )
-                    else:
-                        distance = None
+                        task.calculated_distance = distance  # ✅ فقط للمهام التي لها إحداثيات
+                    # ✅ لا نضيف calculated_distance للمهام بدون إحداثيات
                     
-                    task.calculated_distance = distance
                     tasks_with_distance.append(task)
                 
                 if sort_by == 'nearest':
@@ -227,15 +268,27 @@ class AvailableTasksListView(generics.ListAPIView):
         c = 2 * asin(sqrt(a))
         r = 6371
         return round(c * r, 2)
-    
+
+
+
 class TaskApplicationCreateView(generics.CreateAPIView):
+    """
+    ✅ التقديم على مهمة - مع Soft Lock للعامل
+    POST /api/tasks/{task_id}/apply/
+    """
     serializer_class = TaskApplicationCreateSerializer
     permission_classes = [permissions.IsAuthenticated]
     
     def create(self, request, *args, **kwargs):
+        # ================================
+        # 1️⃣ التحقق من أن المستخدم عامل
+        # ================================
         if request.user.role != 'worker':
             raise PermissionDenied("Only workers can apply for tasks")
         
+        # ================================
+        # 2️⃣ جلب المهمة
+        # ================================
         service_request_id = kwargs.get('pk')
         service_request = get_object_or_404(
             ServiceRequest, 
@@ -243,28 +296,66 @@ class TaskApplicationCreateView(generics.CreateAPIView):
             status='published'
         )
         
+        # ================================
+        # 3️⃣ التحقق من عدم التقديم مسبقاً
+        # ================================
         if TaskApplication.objects.filter(
             service_request=service_request,
             worker=request.user,
             is_active=True
         ).exists():
-            raise ValidationError("You have already applied for this task")
+            return Response({
+                'ok': False,
+                'error': "Vous avez déjà postulé pour cette mission",
+                'error_type': 'already_applied'
+            }, status=status.HTTP_400_BAD_REQUEST)
         
-        # ✅ معالجة آمنة تتعامل مع كل الحالات
-        worker_category = request.user.worker_profile.service_category
-        task_category = service_request.service_category
+        # ================================
+        # 🔒 4️⃣ التحقق من Soft Lock - العامل
+        # ================================
+        from payments.models import UserTaskCounter
+        
+        worker_counter, _ = UserTaskCounter.objects.get_or_create(user=request.user)
+        
+        if worker_counter.needs_payment:
+            return Response({
+                'ok': False,
+                'subscriptionRequired': True,
+                'errorType': 'worker_limit_reached',
+                'message': f'Limite atteinte ({worker_counter.accepted_tasks_count}/5). Abonnement requis (8 MRU/mois).',
+                'counter': {
+                    'tasks_used': worker_counter.accepted_tasks_count,
+                    'tasks_remaining': worker_counter.tasks_remaining_before_payment,
+                    'needs_payment': worker_counter.needs_payment,
+                    'is_premium': worker_counter.is_premium,
+                }
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # ================================
+        # 5️⃣ التحقق من التصنيف (إذا موجود)
+        # ================================
+        if service_request.service_category:
+            worker_category = request.user.worker_profile.service_category
+            task_category = service_request.service_category
 
-        # التحقق: إذا كانا objects، قارن بـ id
-        # إذا كانا strings، قارن مباشرة
-        if hasattr(worker_category, 'id') and hasattr(task_category, 'id'):
-            # حالة: Foreign Key Objects
-            if worker_category.id != task_category.id:
-                raise ValidationError("You don't offer this type of service")
-        else:
-            # حالة: String values
-            if str(worker_category) != str(task_category):
-                raise ValidationError("You don't offer this type of service")
-                
+            if hasattr(worker_category, 'id') and hasattr(task_category, 'id'):
+                if worker_category.id != task_category.id:
+                    return Response({
+                        'ok': False,
+                        'error': "Vous ne proposez pas ce type de service",
+                        'error_type': 'category_mismatch'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                if str(worker_category) != str(task_category):
+                    return Response({
+                        'ok': False,
+                        'error': "Vous ne proposez pas ce type de service",
+                        'error_type': 'category_mismatch'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # ================================
+        # 6️⃣ إنشاء التطبيق
+        # ================================
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
@@ -273,7 +364,9 @@ class TaskApplicationCreateView(generics.CreateAPIView):
             worker=request.user
         )
         
-        # ✅ إشعار العميل بتقدم العامل
+        # ================================
+        # 7️⃣ إشعار العميل
+        # ================================
         from notifications.utils import notify_worker_applied
         notify_worker_applied(
             client_user=service_request.client,
@@ -282,11 +375,14 @@ class TaskApplicationCreateView(generics.CreateAPIView):
             application=application
         )
         
-        return Response(
-            TaskApplicationSerializer(application).data,
-            status=status.HTTP_201_CREATED
-        )
-
+        # ================================
+        # 8️⃣ إرجاع النتيجة
+        # ================================
+        return Response({
+            'ok': True,
+            'message': 'Candidature envoyée avec succès',
+            'application': TaskApplicationSerializer(application).data
+        }, status=status.HTTP_201_CREATED)
 
 class TaskCandidatesListView(generics.ListAPIView):
     serializer_class = TaskApplicationSerializer
@@ -308,14 +404,26 @@ class TaskCandidatesListView(generics.ListAPIView):
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def accept_worker(request, pk):
+    """
+    ✅ قبول عامل - هنا ينتهي دور التطبيق!
+    المهمة تصبح 'active' ويتواصل الطرفان خارج التطبيق
+    
+    التحديث: Signal يزيد العداد تلقائياً عند حفظ المهمة
+    """
     service_request = get_object_or_404(ServiceRequest, id=pk)
     
+    # ================================
+    # 1️⃣ التحقق من صلاحيات العميل
+    # ================================
     if service_request.client != request.user:
         raise PermissionDenied("You can only accept workers for your own tasks")
     
     if service_request.status != 'published':
         raise ValidationError("Task is no longer available for acceptance")
     
+    # ================================
+    # 2️⃣ الحصول على معرف العامل
+    # ================================
     worker_id = request.data.get('worker_id')
     if not worker_id:
         raise ValidationError("Worker ID is required")
@@ -328,15 +436,62 @@ def accept_worker(request, pk):
         application_status='pending'
     )
     
+    # ================================
+    # 3️⃣ التحقق من حد العميل
+    # ================================
+    from payments.models import UserTaskCounter
+    
+    client_counter, _ = UserTaskCounter.objects.get_or_create(user=request.user)
+    if client_counter.needs_payment:
+        return Response({
+            'error': 'subscription_required',
+            'error_type': 'client_limit_reached',
+            'message': 'لقد استنفدت الحد المجاني (5 مهام). يرجى الاشتراك للمتابعة.',
+            'message_fr': 'Vous avez atteint la limite gratuite (5 tâches). Veuillez vous abonner pour continuer.',
+            'tasks_used': client_counter.accepted_tasks_count,
+            'tasks_limit': 5,
+            'subscription_required': True
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    # ================================
+    # 4️⃣ التحقق من حد العامل
+    # ================================
+    worker = application.worker
+    worker_counter, _ = UserTaskCounter.objects.get_or_create(user=worker)
+    if worker_counter.needs_payment:
+        return Response({
+            'error': 'subscription_required',
+            'error_type': 'worker_limit_reached',
+            'message': f'العامل {worker.get_full_name() or worker.phone} وصل للحد المجاني. لا يمكن قبوله.',
+            'message_fr': f'Le travailleur {worker.get_full_name() or worker.phone} a atteint la limite gratuite.',
+            'worker_name': worker.get_full_name() or worker.phone,
+            'tasks_used': worker_counter.accepted_tasks_count,
+            'tasks_limit': 5,
+            'subscription_required': True
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    # ================================
+    # 5️⃣ تحديث حالة الطلب
+    # ================================
     application.application_status = 'accepted'
     application.responded_at = timezone.now()
     application.save()
     
+    # ================================
+    # 6️⃣ تحديث المهمة - Signal يزيد العداد تلقائياً!
+    # ================================
     service_request.assigned_worker = application.worker
     service_request.status = 'active'
     service_request.accepted_at = timezone.now()
-    service_request.save()
+    service_request.save()  # ✅ Signal يشتغل هنا ويزيد العداد!
     
+    # ❌ حذفنا هذين السطرين (Signal سيفعلهما):
+    # client_counter.increment_counter()  ← Signal سيفعلها
+    # worker_counter.increment_counter()  ← Signal سيفعلها
+    
+    # ================================
+    # 7️⃣ رفض باقي المتقدمين
+    # ================================
     TaskApplication.objects.filter(
         service_request=service_request,
         is_active=True
@@ -345,7 +500,9 @@ def accept_worker(request, pk):
         responded_at=timezone.now()
     )
     
-    # ✅ إشعار العامل المقبول
+    # ================================
+    # 8️⃣ إشعار العامل المقبول
+    # ================================
     from notifications.utils import notify_application_accepted
     notify_application_accepted(
         worker_user=application.worker,
@@ -353,7 +510,9 @@ def accept_worker(request, pk):
         client_user=request.user
     )
     
-    # ✅ إشعار العمال المرفوضين
+    # ================================
+    # 9️⃣ إشعار العمال المرفوضين
+    # ================================
     from notifications.utils import notify_application_rejected
     rejected_applications = TaskApplication.objects.filter(
         service_request=service_request,
@@ -366,187 +525,58 @@ def accept_worker(request, pk):
             task=service_request
         )
     
+    # ================================
+    # 🔟 تحديث البيانات بعد Signal
+    # ================================
+    # Signal قد زاد العداد، نحدث البيانات للحصول على القيم الجديدة
+    client_counter.refresh_from_db()
+    worker_counter.refresh_from_db()
+    
+    # ================================
+    # 1️⃣1️⃣ إرجاع Response
+    # ================================
     return Response({
-        'message': 'Worker accepted successfully',
+        'message': '✅ Worker accepted successfully. The task is now active.',
+        'message_fr': '✅ Travailleur accepté avec succès. La tâche est maintenant active.',
         'task_status': 'active',
-        'assigned_worker': application.worker.get_full_name() or application.worker.phone
+        'assigned_worker': application.worker.get_full_name() or application.worker.phone,
+        'note': 'Le travail sera effectué en dehors de l\'application. Vous pouvez contacter le travailleur directement.',
+        
+        # ✅ معلومات العداد المحدثة (بعد Signal)
+        'task_counter': {
+            'client': {
+                'tasks_used': client_counter.accepted_tasks_count,
+                'tasks_remaining': client_counter.tasks_remaining_before_payment,
+                'needs_payment': client_counter.needs_payment,
+                'is_premium': client_counter.is_premium,
+                'counted_task_ids': client_counter.counted_task_ids  # ✅ للتتبع
+            },
+            'worker': {
+                'tasks_used': worker_counter.accepted_tasks_count,
+                'tasks_remaining': worker_counter.tasks_remaining_before_payment,
+                'needs_payment': worker_counter.needs_payment,
+                'is_premium': worker_counter.is_premium,
+                'counted_task_ids': worker_counter.counted_task_ids  # ✅ للتتبع
+            }
+        }
     })
+
 
 @api_view(['PUT'])
 @permission_classes([permissions.IsAuthenticated])
 def update_task_status(request, pk):
+    """
+    ✅ تحديث حالة المهمة - الآن فقط: cancelled
+    ❌ حذف: start_work, work_completed, completed
+    """
     service_request = get_object_or_404(ServiceRequest, id=pk)
     new_status = request.data.get('status')
     
     if not new_status:
         raise ValidationError("Status is required")
     
-    if new_status == 'start_work':
-        if request.user.role != 'worker':
-            raise PermissionDenied("Only workers can start work")
-        if service_request.assigned_worker != request.user:
-            raise PermissionDenied("Only the assigned worker can start this work")
-        if service_request.status != 'active':
-            raise ValidationError("Task must be active to start work")
-        
-        service_request.work_started_at = timezone.now()
-        service_request.save()
-        
-        # ✅ إشعار العميل ببدء العمل
-        from notifications.utils import notify_work_started
-        notify_work_started(
-            client_user=service_request.client,
-            worker_user=request.user,
-            task=service_request
-        )
-        
-        return Response({'message': 'Work started successfully.'})
-    
-    if new_status == 'work_completed':
-        if request.user.role != 'worker':
-            raise PermissionDenied("Only workers can mark work as completed")
-        if service_request.assigned_worker != request.user:
-            raise PermissionDenied("Only the assigned worker can mark this work as completed")
-        if service_request.status != 'active':
-            raise ValidationError("Task must be active to mark as work completed")
-        
-        service_request.status = 'work_completed'
-        service_request.work_completed_at = timezone.now()
-        service_request.save()
-        
-        # ✅ إشعار العميل بإنهاء المهمة
-        from notifications.utils import notify_task_completed
-        notify_task_completed(
-            client_user=service_request.client,
-            worker_user=request.user,
-            task=service_request
-        )
-        
-        return Response({'message': 'Work marked as completed. Waiting for client confirmation.'})
-    
-    elif new_status == 'completed':
-        if service_request.client != request.user:
-            raise PermissionDenied("Only the client can confirm task completion")
-        if service_request.status != 'work_completed':
-            raise ValidationError("Work must be marked as completed by worker first")
-        
-        # Get final_price from request
-        final_price = request.data.get('final_price')
-        
-        print(f'════════ PAYMENT DEBUG ════════')
-        print(f'Task ID: {service_request.id}')
-        print(f'Received final_price: {final_price}')
-        print(f'Type: {type(final_price)}')
-        print(f'Budget: {service_request.budget}')
-        print(f'═══════════════════════════════')
-        
-        # ✅ التحسين 1: Validate final_price
-        if final_price is None or final_price == '':
-            raise ValidationError({
-                'final_price': 'Final price is required'
-            })
-        
-        # Convert to float safely
-        try:
-            final_price_float = float(final_price)
-            
-            # ✅ التحسين 2: Validation للمبلغ المدفوع
-            if final_price_float < 0:
-                raise ValidationError({
-                    'final_price': 'Amount cannot be negative'
-                })
-            
-            if final_price_float <= 0:
-                raise ValidationError({
-                    'final_price': 'Amount must be greater than zero'
-                })
-            
-            # ✅ التحسين 3: تحقق من أن المبلغ منطقي (لا يتجاوز 3 أضعاف الميزانية)
-            max_reasonable_amount = service_request.budget * 3
-            if final_price_float > max_reasonable_amount:
-                raise ValidationError({
-                    'final_price': f'Amount ({final_price_float} MRU) seems too high. Maximum reasonable amount is {max_reasonable_amount} MRU based on budget.'
-                })
-            
-            service_request.final_price = final_price_float
-            
-        except ValueError as e:
-            raise ValidationError({
-                'final_price': f'Invalid amount format: {str(e)}'
-            })
-        except TypeError as e:
-            raise ValidationError({
-                'final_price': f'Invalid amount type: {str(e)}'
-            })
-        
-        # Update task status
-        service_request.status = 'completed'
-        service_request.completed_at = timezone.now()
-        service_request.save()
-        
-        print(f'✅ Task saved with final_price: {service_request.final_price}')
-        
-        # ✅ التحسين 4: CREATE PAYMENT with error handling
-        from payments.models import Payment
-        
-        try:
-            payment = Payment.objects.create(
-                task=service_request,
-                payer=service_request.client,
-                receiver=service_request.assigned_worker,
-                amount=final_price_float,
-                payment_method='cash',
-                status='completed',
-                completed_at=timezone.now()
-            )
-            
-            print(f'✅ Payment created successfully: Payment ID={payment.id}, Amount={payment.amount} MRU')
-            
-        except Exception as e:
-            # ✅ التحسين 5: إذا فشل إنشاء الدفع، ألغِ تحديث المهمة
-            print(f'❌ Payment creation failed: {str(e)}')
-            
-            # Rollback task status
-            service_request.status = 'work_completed'
-            service_request.final_price = None
-            service_request.completed_at = None
-            service_request.save()
-            
-            return Response({
-                'error': f'Payment creation failed: {str(e)}. Task status rolled back.',
-                'details': 'Please try again or contact support.'
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
-        # Update worker stats
-        worker = service_request.assigned_worker
-        if hasattr(worker, 'worker_profile'):
-            worker.worker_profile.total_jobs_completed += 1
-            worker.worker_profile.save()
-        
-        # ✅ إشعار العميل بالدفع
-        from notifications.utils import notify_payment_received
-        notify_payment_received(
-            client_user=service_request.client,
-            task=service_request,
-            amount=service_request.final_price
-        )
-        
-        # ✅ إشعار العامل باستلام الدفع
-        from notifications.utils import notify_payment_sent
-        notify_payment_sent(
-            worker_user=worker,
-            task=service_request,
-            amount=service_request.final_price
-        )
-        
-        return Response({
-            'message': 'Task completed and payment recorded successfully',
-            'final_price': float(service_request.final_price),
-            'payment_id': payment.id,
-            'task_id': service_request.id
-        })
-    
-    elif new_status == 'cancelled':
+    # ✅ الحالة الوحيدة المسموحة: cancelled
+    if new_status == 'cancelled':
         if service_request.client != request.user:
             raise PermissionDenied("You can only cancel your own tasks")
         if service_request.status not in ['published', 'active']:
@@ -556,7 +586,7 @@ def update_task_status(request, pk):
         service_request.cancelled_at = timezone.now()
         service_request.save()
         
-        # ✅ إشعار العامل بالإلغاء
+        # ✅ إشعار العامل بالإلغاء (إن وجد)
         if service_request.assigned_worker:
             from notifications.utils import notify_service_cancelled
             notify_service_cancelled(
@@ -566,12 +596,23 @@ def update_task_status(request, pk):
                 reason=""
             )
         
-        return Response({'message': 'Task cancelled successfully'})
+        return Response({
+            'message': 'Task cancelled successfully',
+            'task_status': 'cancelled'
+        })
     
     else:
-        raise ValidationError("Invalid status")
+        # ❌ أي حالة أخرى غير مسموحة
+        raise ValidationError(
+            "Invalid status. Only 'cancelled' is allowed. "
+            "Work happens outside the app after worker acceptance."
+        )
+
 
 class TaskReviewCreateView(generics.CreateAPIView):
+    """
+    ✅ التقييم يبقى - العميل يمكنه تقييم العامل بعد انتهاء العمل خارج التطبيق
+    """
     serializer_class = TaskReviewSerializer
     permission_classes = [permissions.IsAuthenticated]
     
@@ -580,14 +621,17 @@ class TaskReviewCreateView(generics.CreateAPIView):
         service_request = get_object_or_404(
             ServiceRequest, 
             id=service_request_id,
-            status='completed'
+            status='active'  # ✅ يمكن التقييم على المهام النشطة
         )
         
         if service_request.client != self.request.user:
-            raise PermissionDenied("You can only review your own completed tasks")
+            raise PermissionDenied("You can only review your own tasks")
         
         if hasattr(service_request, 'review'):
             raise ValidationError("Task already reviewed")
+        
+        if not service_request.assigned_worker:
+            raise ValidationError("Cannot review a task without an assigned worker")
         
         review = serializer.save(
             service_request=service_request,
@@ -607,14 +651,17 @@ class TaskReviewCreateView(generics.CreateAPIView):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def task_stats(request):
+    """
+    ✅ إحصائيات المهام - محدثة للنظام الجديد
+    """
     user = request.user
     if user.role == 'client':
         stats = {
             'published': ServiceRequest.objects.filter(client=user, status='published').count(),
             'active': ServiceRequest.objects.filter(client=user, status='active').count(),
-            'completed': ServiceRequest.objects.filter(client=user, status='completed').count(),
             'cancelled': ServiceRequest.objects.filter(client=user, status='cancelled').count(),
-            'total_spent': 0,
+            'total_tasks': ServiceRequest.objects.filter(client=user).count(),
+            # ❌ حذف: completed, total_spent
         }
     elif user.role == 'worker':
         stats = {
@@ -622,15 +669,14 @@ def task_stats(request):
             'applications_pending': TaskApplication.objects.filter(worker=user, application_status='pending').count(),
             'applications_accepted': TaskApplication.objects.filter(worker=user, application_status='accepted').count(),
             'tasks_active': ServiceRequest.objects.filter(assigned_worker=user, status='active').count(),
-            'tasks_completed': ServiceRequest.objects.filter(assigned_worker=user, status='completed').count(),
-            'total_earned': 0,
+            'total_applications': TaskApplication.objects.filter(worker=user).count(),
+            # ❌ حذف: tasks_completed, total_earned
         }
     else:
         stats = {
             'total_tasks': ServiceRequest.objects.count(),
             'published_tasks': ServiceRequest.objects.filter(status='published').count(),
             'active_tasks': ServiceRequest.objects.filter(status='active').count(),
-            'completed_tasks': ServiceRequest.objects.filter(status='completed').count(),
             'cancelled_tasks': ServiceRequest.objects.filter(status='cancelled').count(),
             'total_applications': TaskApplication.objects.count(),
             'total_reviews': TaskReview.objects.count(),
@@ -639,47 +685,11 @@ def task_stats(request):
     return Response(stats)
 
 
-# تحديث AvailableTaskSerializer لإظهار المسافة المحسوبة
-class AvailableTaskSerializer(serializers.ModelSerializer):
-    """
-    تحديث: إضافة المسافة المحسوبة من موقع العامل
-    """
-    distance_from_worker = serializers.SerializerMethodField()
-    exact_distance_km = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = ServiceRequest
-        fields = [
-            'id', 'title', 'description', 'serviceType', 'category',
-            'budget', 'location', 'preferred_time', 'is_urgent',
-            'requires_materials', 'createdAt', 'applicantsCount',
-            'client_name', 'client_rating', 'distance',
-            'has_applied', 'application_status',
-            'distance_from_worker', 'exact_distance_km'
-        ]
-    
-    def get_distance_from_worker(self, obj):
-        if hasattr(obj, 'calculated_distance'):
-            return f"{obj.calculated_distance:.1f} km"
-        return self.get_distance(obj)
-    
-    def get_exact_distance_km(self, obj):
-        if hasattr(obj, 'calculated_distance'):
-            return round(obj.calculated_distance, 1)
-        return None
-    
-    def get_distance(self, obj):
-        if hasattr(obj, 'calculated_distance'):
-            return f"{obj.calculated_distance:.1f} km"
-        return f"{random.uniform(0.5, 10.0):.1f} km"
-
-
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def tasks_map_data(request):
     """
     API مخصص لعرض المهام على الخريطة التفاعلية للعامل
-    يعيد بيانات مبسطة ومحسنة للخرائط مع موقع العامل
     """
     if request.user.role != 'worker':
         raise PermissionDenied("هذه الخدمة متاحة للعمال فقط")
@@ -693,7 +703,6 @@ def tasks_map_data(request):
     
     worker_profile = request.user.worker_profile
     
-    # التحقق من تفعيل مشاركة الموقع
     if not worker_profile.location_sharing_enabled or not worker_profile.current_latitude:
         return Response({
             'error': 'مشاركة الموقع غير مفعلة',
@@ -702,23 +711,23 @@ def tasks_map_data(request):
             'tasks': []
         }, status=status.HTTP_400_BAD_REQUEST)
     
-    # معاملات الفلترة
     distance_max = float(request.query_params.get('distance_max', 30))
     category = request.query_params.get('category')
     min_budget = request.query_params.get('min_budget')
     max_budget = request.query_params.get('max_budget')
     urgent_only = request.query_params.get('urgent_only', 'false').lower() == 'true'
     
-    # الحصول على المهام التي لها إحداثيات دقيقة فقط
     queryset = ServiceRequest.objects.filter(
         status='published',
         latitude__isnull=False,
         longitude__isnull=False
     ).select_related('client', 'service_category')
     
-    # تطبيق الفلاتر
-    if category:
+    # ✅ فلترة التصنيف (مع السماح بـ null)
+    if category and category != 'Non classifié':
         queryset = queryset.filter(service_category__name__icontains=category)
+    elif category == 'Non classifié':
+        queryset = queryset.filter(service_category__isnull=True)
     
     if min_budget:
         try:
@@ -735,7 +744,6 @@ def tasks_map_data(request):
     if urgent_only:
         queryset = queryset.filter(is_urgent=True)
     
-    # فلترة المهام القريبة وحساب المسافة
     worker_lat = float(worker_profile.current_latitude)
     worker_lng = float(worker_profile.current_longitude)
     
@@ -748,17 +756,13 @@ def tasks_map_data(request):
             task.calculated_distance = distance
             nearby_tasks.append(task)
     
-    # ترتيب حسب القرب
     nearby_tasks.sort(key=lambda x: x.calculated_distance)
     
-    # تحديد العدد الأقصى للمهام المعروضة على الخريطة
     max_tasks = int(request.query_params.get('max_tasks', 50))
     nearby_tasks = nearby_tasks[:max_tasks]
     
-    # تحويل البيانات
     serializer = TaskMapDataSerializer(nearby_tasks, many=True, context={'request': request})
     
-    # إحصائيات إضافية للخريطة
     stats = {
         'total_found': len(nearby_tasks),
         'urgent_count': sum(1 for task in nearby_tasks if task.is_urgent),
@@ -788,7 +792,8 @@ def tasks_map_data(request):
         'tasks': serializer.data
     }, status=status.HTTP_200_OK)
 
-# tasks/views.py
+
+# ✅ نبقي APIs التقييمات كما هي
 from rest_framework import generics, permissions, filters
 from rest_framework.response import Response
 from django.db.models import Q, Avg, Count
@@ -798,27 +803,20 @@ from .serializers import TaskReviewSerializer
 
 
 class WorkerReceivedReviewsView(generics.ListAPIView):
-
     serializer_class = TaskReviewSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     
-    # Search in review text and task title
     search_fields = ['review_text', 'service_request__title']
-    
-    # Allow ordering by these fields
     ordering_fields = ['created_at', 'rating']
-    ordering = ['-created_at']  # Default: newest first
+    ordering = ['-created_at']
     
     def get_queryset(self):
-        """Get reviews for authenticated worker only"""
         user = self.request.user
         
-        # Only workers can view received reviews
         if user.role != 'worker':
             return TaskReview.objects.none()
         
-        # Get reviews where user is the assigned worker
         queryset = TaskReview.objects.filter(
             service_request__assigned_worker=user
         ).select_related(
@@ -828,7 +826,6 @@ class WorkerReceivedReviewsView(generics.ListAPIView):
             'service_request__service_category'
         ).order_by('-created_at')
         
-        # Filter by rating if provided
         rating = self.request.query_params.get('rating')
         if rating:
             try:
@@ -841,16 +838,13 @@ class WorkerReceivedReviewsView(generics.ListAPIView):
         return queryset
     
     def list(self, request, *args, **kwargs):
-        """Override to add statistics in response"""
         queryset = self.get_queryset()
         
-        # Pagination
         limit = int(request.query_params.get('limit', 20))
         offset = int(request.query_params.get('offset', 0))
         
         total_count = queryset.count()
         
-        # Calculate statistics
         stats = queryset.aggregate(
             average_rating=Avg('rating'),
             total_reviews=Count('id'),
@@ -861,10 +855,8 @@ class WorkerReceivedReviewsView(generics.ListAPIView):
             one_star=Count('id', filter=Q(rating=1)),
         )
         
-        # Apply pagination
         paginated_queryset = queryset[offset:offset + limit]
         
-        # Serialize data
         serializer = self.get_serializer(paginated_queryset, many=True)
         
         return Response({
@@ -887,10 +879,6 @@ class WorkerReceivedReviewsView(generics.ListAPIView):
 
 
 class TaskReviewStatsView(generics.GenericAPIView):
-    """
-    Get review statistics for worker
-    GET /tasks/review-stats/
-    """
     permission_classes = [permissions.IsAuthenticated]
     
     def get(self, request):

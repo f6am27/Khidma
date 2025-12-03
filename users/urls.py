@@ -6,7 +6,10 @@ from .views import (
     ResendRegisterOTPView, ResendPasswordResetOTPView,
     CompleteOnboardingView, UserProfileView,
     WorkerProfileView, ClientProfileView, WorkerOnboardingView,
-    update_worker_location, toggle_location_sharing, get_worker_location_info,ChangePasswordView,LogoutView,SetWorkerOnlineView
+    update_worker_location, toggle_location_sharing, get_worker_location_info,
+    ChangePasswordView,LogoutView,SetWorkerOnlineView,
+    SavedLocationsListView, SavedLocationCreateView, 
+    SavedLocationUpdateView, SavedLocationDeleteView
 
 )
 from .upload_views import (
@@ -60,4 +63,10 @@ urlpatterns = [
     path('update-location/', update_worker_location, name='update_worker_location'),
     path('toggle-location-sharing/', toggle_location_sharing, name='toggle_location_sharing'),
     path('location-info/', get_worker_location_info, name='get_worker_location_info'),
+    path('saved-locations/', SavedLocationsListView.as_view(), name='saved_locations_list'),
+    path('saved-locations/create/', SavedLocationCreateView.as_view(), name='saved_location_create'),
+    path('saved-locations/<int:pk>/', SavedLocationUpdateView.as_view(), name='saved_location_update'),
+    path('saved-locations/<int:pk>/delete/', SavedLocationDeleteView.as_view(), name='saved_location_delete'),
+
+    
 ]

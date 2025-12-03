@@ -87,27 +87,16 @@ class ClientProfileSerializer(serializers.ModelSerializer):
         return count
 
     def get_total_tasks_completed(self, obj):
-        """حساب عدد المهام المكتملة من قاعدة البيانات"""
-        from tasks.models import ServiceRequest
-        count = ServiceRequest.objects.filter(
-            client=obj,
-            status='completed'
-        ).count()
-        print(f'📊 Tasks completed for client {obj.id}: {count}')
-        return count
+        
+        # نعيد 0 دائماً لأن النظام لم يعد يتتبع الإكمال
+        return 0
 
     def get_total_amount_spent(self, obj):
-        """حساب المبلغ الكلي المنفق من قاعدة البيانات"""
-        from tasks.models import ServiceRequest
-        from django.db.models import Sum
-        
-        total = ServiceRequest.objects.filter(
-            client=obj,
-            status='completed'
-        ).aggregate(total=Sum('final_price'))['total'] or 0
-        
-        print(f'💰 Total amount spent by client {obj.id}: {total}')
-        return str(total) if total else "0.00"
+        """
+        ❌ النظام الجديد: لا توجد مدفوعات بين العميل والعامل
+        فقط اشتراك شهري (8 MRU/شهر) للمنصة
+        """
+        return "0.00"
 
     def get_success_rate(self, obj):
         if hasattr(obj, 'client_profile'):

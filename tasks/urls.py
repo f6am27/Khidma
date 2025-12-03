@@ -1,34 +1,33 @@
-# tasks/urls.py
+#tasks/urls.py
 from django.urls import path
 from . import views
 
 urlpatterns = [
-    # Client endpoints - Task management
-    path('create/', views.ServiceRequestCreateView.as_view(), name='create-service-request'),  # POST - Create task
+    # ==================== Client Endpoints ====================
+    # Task management
+    path('create/', views.ServiceRequestCreateView.as_view(), name='create-service-request'),
     path('my-tasks/', views.ClientTasksListView.as_view(), name='my-tasks'),
-    path('<int:pk>/', views.ServiceRequestDetailView.as_view(), name='service-request-detail'),  # GET - Task details
-    path('<int:pk>/update/', views.ServiceRequestUpdateView.as_view(), name='task-update'),  # PUT - Update task
+    path('<int:pk>/', views.ServiceRequestDetailView.as_view(), name='service-request-detail'),
+    path('<int:pk>/update/', views.ServiceRequestUpdateView.as_view(), name='task-update'),
     
     # Task candidates management
-    path('<int:pk>/candidates/', views.TaskCandidatesListView.as_view(), name='task-candidates'),  # GET - View candidates
-    path('<int:pk>/accept/', views.accept_worker, name='accept-worker'),  # POST - Accept worker
+    path('<int:pk>/candidates/', views.TaskCandidatesListView.as_view(), name='task-candidates'),
+    path('<int:pk>/accept/', views.accept_worker, name='accept-worker'),
     
-    # Task status management
-    path('<int:pk>/status/', views.update_task_status, name='update-task-status'),  # PUT - Update status
+    # ✅ Task status - الآن فقط cancelled
+    path('<int:pk>/status/', views.update_task_status, name='update-task-status'),
     
     # Task review
-     path('<int:pk>/review/', views.TaskReviewCreateView.as_view(), name='create-task-review'),  # POST - Review task
+    path('<int:pk>/review/', views.TaskReviewCreateView.as_view(), name='create-task-review'),
+    path('my-reviews/', views.WorkerReceivedReviewsView.as_view(), name='worker-reviews'),
+    path('review-stats/', views.TaskReviewStatsView.as_view(), name='review-stats'),
     
-    # بعد سطر path('<int:pk>/review/', ...)
-    path('my-reviews/', views.WorkerReceivedReviewsView.as_view(), name='worker-reviews'),  # GET - Worker's received reviews
-    path('review-stats/', views.TaskReviewStatsView.as_view(), name='review-stats'),  # GET - Review statistics
-    
-    # Worker endpoints - Available tasks
-    path('available/', views.AvailableTasksListView.as_view(), name='available-tasks'),  # GET - Available tasks for workers
+    # ==================== Worker Endpoints ====================
+    # Available tasks
+    path('available/', views.AvailableTasksListView.as_view(), name='available-tasks'),
     path('map-data/', views.tasks_map_data, name='tasks-map-data'), 
-    path('<int:pk>/apply/', views.TaskApplicationCreateView.as_view(), name='apply-to-task'),  # POST - Apply for task
-
+    path('<int:pk>/apply/', views.TaskApplicationCreateView.as_view(), name='apply-to-task'),
     
-    # Statistics
-    path('stats/', views.task_stats, name='task-stats'),  # GET - Task statistics
+    # ==================== Statistics ====================
+    path('stats/', views.task_stats, name='task-stats'),
 ]

@@ -520,3 +520,78 @@ class ClientProfile(models.Model):
             (self.total_tasks_completed / self.total_tasks_published) * 100, 
             1
         )
+    
+class SavedLocation(models.Model):
+    """
+    المواقع المحفوظة للمستخدمين (عميل/عامل)
+    يتم حفظ المواقع تلقائياً عند نشر مهمة بموقع GPS
+    """
+    user = models.ForeignKey(
+        User, 
+        on_delete=models.CASCADE, 
+        related_name='saved_locations',
+        help_text="المستخدم صاحب الموقع"
+    )
+    
+    # اسم الموقع (اختياري - يمكن للمستخدم تسميته)
+    name = models.CharField(
+        max_length=100, 
+        blank=True, 
+        null=True,
+        help_text="اسم مخصص مثل: المنزل، المكتب، محل أمي"
+    )
+    
+    # العنوان الكامل
+    address = models.CharField(
+        max_length=300,
+        help_text="العنوان الكامل مثل: Tevragh Zeina, Nouakchott"
+    )
+    
+    # الإحداثيات
+    latitude = models.DecimalField(
+        max_digits=10, 
+        decimal_places=7,
+        help_text="خط العرض"
+    )
+    longitude = models.DecimalField(
+        max_digits=11, 
+        decimal_places=7,
+        help_text="خط الطول"
+    )
+    
+    # الإيموجي (اختياري)
+    emoji = models.CharField(
+        max_length=10, 
+        blank=True, 
+        default='📍',
+        help_text="إيموجي اختياري للموقع"
+    )
+    
+    # إحصائيات الاستخدام
+    usage_count = models.PositiveIntegerField(
+        default=1,
+        help_text="عدد مرات استخدام هذا الموقع"
+    )
+    last_used_at = models.DateTimeField(
+        auto_now=True,
+        help_text="آخر مرة استخدم فيها هذا الموقع"
+    )
+    
+    # تواريخ
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = "Saved Location"
+        verbose_name_plural = "Saved Locations"
+        ordering = ['-usage_count', '-last_used_at']  # الأكثر استخداماً أولاً
+        unique_together = ['user', 'latitude', 'longitude']  # منع التكرار
+        indexes = [
+            models.Index(fields=['user', '-usage_count']),  # تسريع الاستعلامات
+            models.Index(fields=['user', '-last_used_at']),
+        ]
+    
+    def __str__(self):
+        if self.name:
+            return f"{self.emoji} {self.name} - {self.user.get_full_name()}"
+        return f"{self.emoji} {self.address[:30]}... - {self.user.get_full_name()}"

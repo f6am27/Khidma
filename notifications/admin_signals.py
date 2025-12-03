@@ -107,23 +107,23 @@ def notify_admin_low_rating(sender, instance, created, **kwargs):
 
 # ============================================
 # Signal 4: Large Payment
-# ============================================
-@receiver(post_save, sender='payments.Payment')
-def notify_admin_large_payment(sender, instance, created, **kwargs):
-    """
-    إشعار عند معاملة مالية كبيرة (> 10000 MRU)
-    Notify admin when large payment is made
-    """
-    if created and instance.amount > 10000:
-        payer_name = instance.payer.get_full_name() or instance.payer.phone
-        receiver_name = instance.receiver.get_full_name() or instance.receiver.phone
+# # ============================================
+# @receiver(post_save, sender='payments.Payment')
+# def notify_admin_large_payment(sender, instance, created, **kwargs):
+#     """
+#     إشعار عند معاملة مالية كبيرة (> 10000 MRU)
+#     Notify admin when large payment is made
+#     """
+#     if created and instance.amount > 10000:
+#         payer_name = instance.payer.get_full_name() or instance.payer.phone
+#         receiver_name = instance.receiver.get_full_name() or instance.receiver.phone
         
-        create_admin_notification(
-            notification_type='large_payment',
-            title=f'Transaction importante: {instance.amount} MRU',
-            message=f'Paiement de {instance.amount} MRU de {payer_name} a {receiver_name}',
-            related_task=instance.task if hasattr(instance, 'task') else None
-        )
+#         create_admin_notification(
+#             notification_type='large_payment',
+#             title=f'Transaction importante: {instance.amount} MRU',
+#             message=f'Paiement de {instance.amount} MRU de {payer_name} a {receiver_name}',
+#             related_task=instance.task if hasattr(instance, 'task') else None
+#         )
 
 
 # ============================================

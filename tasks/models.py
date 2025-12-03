@@ -1,7 +1,7 @@
-# tasks/models.py
+#tasks/models.py
 from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
-from users.models import User  # النظام الجديد
+from users.models import User
 from services.models import ServiceCategory
 
 
@@ -21,35 +21,48 @@ class ServiceRequest(models.Model):
     # Task details
     title = models.CharField(max_length=200)
     description = models.TextField()
+    
+    # ✅ Service category أصبح اختياري (optional)
     service_category = models.ForeignKey(
         ServiceCategory,
         on_delete=models.CASCADE,
-        related_name="service_requests"
+        related_name="service_requests",
+        null=True,  # ✅ اختياري
+        blank=True  # ✅ اختياري
     )
     
     # Pricing - no minimum/maximum restrictions
     budget = models.IntegerField(
-    validators=[MinValueValidator(50)],
-    help_text="Budget proposé en MRU"
+        validators=[MinValueValidator(50)],
+        help_text="Budget proposé en MRU"
     )
     
     # Location and timing
     location = models.CharField(max_length=300)
-    preferred_time = models.CharField(max_length=100)
-    time_description = models.CharField(max_length=100, blank=True, null=True)  # ← أضف هذا السطر
-
+    
+    # ✅ Preferred time أصبح اختياري (optional)
+    preferred_time = models.CharField(
+        max_length=100,
+        blank=True,  # ✅ اختياري
+        null=True    # ✅ اختياري
+    )
+    
+    # ✅ Time description أصبح اختياري (optional)
+    time_description = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True
+    )
     
     # Location coordinates (optional for GPS location)
     latitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
     longitude = models.DecimalField(max_digits=11, decimal_places=7, null=True, blank=True)
-        
-    # Status management
+    
+    # ✅ Status management - مبسط (3 حالات فقط)
     STATUS_CHOICES = [
-        ('published', 'Publiée'),
-        ('active', 'En cours'),
-        ('work_completed', 'Travail terminé'),
-        ('completed', 'Terminée'),
-        ('cancelled', 'Annulée'),
+        ('published', 'Publiée'),      # منشورة - العمال يتقدمون
+        ('active', 'En cours'),         # نشطة - تم قبول عامل
+        ('cancelled', 'Annulée'),       # ملغاة
     ]
     status = models.CharField(
         max_length=20,
@@ -67,23 +80,14 @@ class ServiceRequest(models.Model):
         limit_choices_to={'role': 'worker'}
     )
     
-    # Final pricing
-    final_price = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        help_text="Prix final négocié"
-    )
+    # ❌ حذف: final_price - لا نحتاجه بعد الآن
     
-    # Timestamps
+    # Timestamps - نبقي فقط ما نحتاجه
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    accepted_at = models.DateTimeField(null=True, blank=True)
-    work_started_at = models.DateTimeField(null=True, blank=True)  
-    work_completed_at = models.DateTimeField(null=True, blank=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
+    accepted_at = models.DateTimeField(null=True, blank=True)  # وقت قبول العامل
     cancelled_at = models.DateTimeField(null=True, blank=True)
+    
     
     # Additional info
     is_urgent = models.BooleanField(default=False)
@@ -110,7 +114,9 @@ class ServiceRequest(models.Model):
     @property
     def service_type(self):
         """Service type name (for Flutter compatibility)"""
-        return self.service_category.name
+        if self.service_category:
+            return self.service_category.name
+        return "Non classifié"  # ✅ للمهام بدون تصنيف
 
 
 class TaskApplication(models.Model):
@@ -195,6 +201,9 @@ class TaskReview(models.Model):
     """
     Client review of completed task
     تقييم العميل للمهمة المكتملة
+    
+    ملاحظة: نبقي التقييمات لأنها مهمة لسمعة العامل
+    حتى لو لم يعد هناك حالة 'completed' في المهام
     """
     service_request = models.OneToOneField(
         ServiceRequest,
@@ -293,18 +302,15 @@ class TaskNotification(models.Model):
         blank=True
     )
     
-    # Notification details
+    # ✅ Notification details - محدثة لتناسب النظام الجديد
     NOTIFICATION_TYPES = [
         ('task_posted', 'Nouvelle tâche publiée'),
         ('application_received', 'Nouvelle candidature reçue'),
         ('application_accepted', 'Candidature acceptée'),
         ('application_rejected', 'Candidature refusée'),
-        ('work_started', 'Travail commencé'),
-        ('work_completed', 'Travail terminé'),
-        ('task_completed', 'Tâche terminée'),
-        ('payment_completed', 'Paiement effectué'),
-        ('review_received', 'Évaluation reçue'),
         ('task_cancelled', 'Tâche annulée'),
+        ('review_received', 'Évaluation reçue'),
+        # ❌ حذف: work_started, work_completed, task_completed, payment_completed
     ]
     
     notification_type = models.CharField(

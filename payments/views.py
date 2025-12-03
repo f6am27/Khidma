@@ -1,534 +1,314 @@
 # payments/views.py
-from rest_framework import generics, status, permissions
+"""
+APIs نظام عداد المهام والاشتراكات
+✅ تم التفعيل: التحقق من الحد، عرض الإحصائيات
+🔮 معطل: الدفع (ينتظر ربط Benkily)
+"""
+
+from rest_framework import status, generics
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.exceptions import PermissionDenied, ValidationError
-from django.db.models import Q, Sum, Count, Avg
+from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
-from payments.models import Payment
-from .moosyl_service import moosyl_service
-from rest_framework.views import APIView
-from django.views.decorators.csrf import csrf_exempt
-from django.http import JsonResponse
-from django.utils import timezone
-import json
-from .models import Payment
+from django.db import models  
+
+from .models import UserTaskCounter, PlatformSubscription
 from .serializers import (
-    PaymentSerializer,
-    PaymentListSerializer,
-    PaymentCreateSerializer,
-    PaymentStatisticsSerializer,
+    UserTaskCounterSerializer,
+    UserTaskCounterSimpleSerializer,
+    PlatformSubscriptionSerializer,
+    SubscriptionCreateSerializer
 )
-from tasks.models import ServiceRequest
 
 
-class PaymentListCreateView(generics.ListCreateAPIView):
-    """
-    List and create payments
-    GET: List payments
-    POST: Create new payment
-    """
-    serializer_class = PaymentSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def get_queryset(self):
-        """Get payments for authenticated user"""
-        user = self.request.user
-        
-        # Clients see payments they made
-        if user.role == 'client':
-            return Payment.objects.filter(payer=user).select_related(
-                'task', 'payer', 'receiver', 'task__service_category'
-            )
-        
-        # Workers see payments they received
-        elif user.role == 'worker':
-            return Payment.objects.filter(receiver=user).select_related(
-                'task', 'payer', 'receiver', 'task__service_category'
-            )
-        
-        return Payment.objects.none()
-    
-    def get_serializer_class(self):
-        if self.request.method == 'POST':
-            return PaymentCreateSerializer
-        return PaymentListSerializer
-    
-    def perform_create(self, serializer):
-        """Create payment from task completion"""
-        payment = serializer.save()
-        print(f'✅ Payment created: {payment.id} - Amount: {payment.amount}')
-        
-        # ✅ إشعار العميل بالدفع
-        from notifications.utils import notify_payment_received
-        notify_payment_received(
-            client_user=payment.payer,
-            task=payment.task,
-            amount=payment.amount
-        )
-        
-        # ✅ إشعار العامل باستلام الدفع
-        from notifications.utils import notify_payment_sent
-        notify_payment_sent(
-            worker_user=payment.receiver,
-            task=payment.task,
-            amount=payment.amount
-        )
-
-class PaymentDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """
-    Retrieve, update, or delete a payment
-    """
-    serializer_class = PaymentSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def get_queryset(self):
-        """User can only access their own payments"""
-        user = self.request.user
-        
-        if user.role == 'client':
-            return Payment.objects.filter(payer=user)
-        elif user.role == 'worker':
-            return Payment.objects.filter(receiver=user)
-        
-        return Payment.objects.none()
-    
-    def perform_update(self, serializer):
-        """Update payment status"""
-        payment = serializer.save()
-        
-        if payment.status == 'completed':
-            print(f'✅ Payment {payment.id} completed')
-            
-            # ✅ إشعار العميل بإتمام الدفع
-            from notifications.utils import notify_payment_received
-            notify_payment_received(
-                client_user=payment.payer,
-                task=payment.task,
-                amount=payment.amount
-            )
-            
-            # ✅ إشعار العامل باستلام الدفع
-            from notifications.utils import notify_payment_sent
-            notify_payment_sent(
-                worker_user=payment.receiver,
-                task=payment.task,
-                amount=payment.amount
-            )
-            
-class MyPaymentsView(generics.ListAPIView):
-    """
-    Get my payments (made or received)
-    """
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def get_serializer_class(self):
-        return PaymentListSerializer
-    
-    def get_queryset(self):
-        user = self.request.user
-        
-        if user.role == 'client':
-            return Payment.objects.filter(payer=user).select_related(
-                'task', 'receiver', 'task__service_category'
-            ).order_by('-created_at')
-        
-        elif user.role == 'worker':
-            return Payment.objects.filter(receiver=user).select_related(
-                'task', 'payer', 'task__service_category'
-            ).order_by('-created_at')
-        
-        return Payment.objects.none()
-
-
-class ReceivedPaymentsView(generics.ListAPIView):
-    """
-    Get payments received (for workers only)
-    """
-    permission_classes = [permissions.IsAuthenticated]
-    serializer_class = PaymentListSerializer
-    
-    def get_queryset(self):
-        if self.request.user.role != 'worker':
-            raise PermissionDenied("Only workers can view received payments")
-        
-        return Payment.objects.filter(
-            receiver=self.request.user,
-            status='completed'
-        ).select_related(
-            'task', 'payer', 'task__service_category'
-        ).order_by('-created_at')
-
+# ================================
+# 1️⃣ التحقق من حد المهام
+# ================================
 
 @api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
-def payment_statistics(request):
+@permission_classes([IsAuthenticated])
+def check_task_limit(request):
     """
-    Get payment statistics for authenticated user
+    ✅ التحقق من عدد المهام المتبقية للمستخدم
+    
+    Response:
+    {
+        "accepted_tasks_count": 3,
+        "tasks_remaining": 2,
+        "needs_subscription": false,
+        "is_premium": false,
+        "status": {...},
+        "message": "..."
+    }
     """
-    user = request.user
-    
-    if user.role == 'client':
-        # Client statistics - payments made
-        payments = Payment.objects.filter(payer=user)
-        
-        total_amount = payments.filter(
-            status='completed'
-        ).aggregate(Sum('amount'))['amount__sum'] or 0
-        
-        stats = {
-            'role': 'client',
-            'total_paid': float(total_amount),
-            'total_transactions': payments.count(),
-            'completed': payments.filter(status='completed').count(),
-            'pending': payments.filter(status='pending').count(),
-            'cancelled': payments.filter(status='cancelled').count(),
-            'average_per_transaction': float(
-                payments.filter(
-                    status='completed'
-                ).aggregate(Avg('amount'))['amount__avg'] or 0
-            ),
-            'payment_methods': dict(
-                payments.values('payment_method').annotate(
-                    count=Count('id')
-                ).values_list('payment_method', 'count')
-            ),
-        }
-    
-    elif user.role == 'worker':
-        # Worker statistics - payments received
-        payments = Payment.objects.filter(receiver=user)
-        
-        total_amount = payments.filter(
-            status='completed'
-        ).aggregate(Sum('amount'))['amount__sum'] or 0
-        
-        stats = {
-            'role': 'worker',
-            'total_earned': float(total_amount),
-            'total_transactions': payments.count(),
-            'completed': payments.filter(status='completed').count(),
-            'pending': payments.filter(status='pending').count(),
-            'cancelled': payments.filter(status='cancelled').count(),
-            'average_per_transaction': float(
-                payments.filter(
-                    status='completed'
-                ).aggregate(Avg('amount'))['amount__avg'] or 0
-            ),
-            'payment_methods': dict(
-                payments.values('payment_method').annotate(
-                    count=Count('id')
-                ).values_list('payment_method', 'count')
-            ),
-        }
-    
-    else:
-        stats = {'error': 'Invalid user role'}
-    
-    return Response(stats, status=status.HTTP_200_OK)
-
-
-@api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
-def payment_history(request):
-    """
-    Get complete payment history with filters
-    Query params: status, payment_method, limit, offset
-    """
-    user = request.user
-    
-    # Get base queryset
-    if user.role == 'client':
-        queryset = Payment.objects.filter(payer=user)
-    elif user.role == 'worker':
-        queryset = Payment.objects.filter(receiver=user)
-    else:
-        queryset = Payment.objects.none()
-    
-    # Apply filters
-    status_filter = request.query_params.get('status')
-    if status_filter:
-        queryset = queryset.filter(status=status_filter)
-    
-    payment_method = request.query_params.get('payment_method')
-    if payment_method:
-        queryset = queryset.filter(payment_method=payment_method)
-    
-    # Order by date
-    queryset = queryset.order_by('-created_at').select_related(
-        'task', 'payer', 'receiver', 'task__service_category'
+    counter, created = UserTaskCounter.objects.get_or_create(
+        user=request.user
     )
     
-    # Pagination
-    limit = int(request.query_params.get('limit', 20))
-    offset = int(request.query_params.get('offset', 0))
+    serializer = UserTaskCounterSimpleSerializer(counter)
     
-    total_count = queryset.count()
-    paginated = queryset[offset:offset + limit]
+    # رسالة للمستخدم
+    FREE_LIMIT = 5
+    remaining = FREE_LIMIT - counter.accepted_tasks_count
     
-    serializer = PaymentListSerializer(paginated, many=True)
+    if counter.is_premium:
+        message = "✅ أنت مشترك - لا حدود!"
+        message_fr = "✅ Vous êtes abonné - Illimité!"
+        status_type = "premium"
+    elif remaining > 0:
+        message = f"✅ متبقي {remaining} مهام مجانية"
+        message_fr = f"✅ {remaining} tâches gratuites restantes"
+        status_type = "active"
+    else:
+        message = "⚠️ استنفدت الحد المجاني (5 مهام). يرجى الاشتراك."
+        message_fr = "⚠️ Limite atteinte (5 tâches). Veuillez vous abonner."
+        status_type = "limit_reached"
     
     return Response({
-        'count': total_count,
-        'limit': limit,
-        'offset': offset,
-        'results': serializer.data,
-    }, status=status.HTTP_200_OK)
+        **serializer.data,
+        'status': {
+            'type': status_type,
+            'message': message,
+            'message_fr': message_fr
+        },
+        'subscription': {
+            'required': counter.needs_payment,
+            'monthly_price': '8 MRU',
+            'duration': '30 jours'
+        }
+    })
 
 
-class InitiateMoosylPaymentView(APIView):
+# ================================
+# 2️⃣ عرض تفاصيل العداد
+# ================================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def my_task_counter(request):
     """
-    إنشاء طلب دفع إلكتروني عبر Moosyl
-    POST: /api/payments/moosyl/initiate/
+    ✅ عرض تفاصيل كاملة عن عداد المهام
     """
-    permission_classes = [permissions.IsAuthenticated]
+    counter, created = UserTaskCounter.objects.get_or_create(
+        user=request.user
+    )
     
-    def post(self, request):
-        user = request.user
-        
-        # التحقق من أن المستخدم عميل
-        if user.role != 'client':
-            return Response(
-                {'error': 'Seuls les clients peuvent effectuer des paiements'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        # الحصول على البيانات
-        task_id = request.data.get('task_id')
-        payment_method = request.data.get('payment_method', 'bankily').lower()
-        amount = request.data.get('amount')
-        
-        # التحقق من صحة البيانات
-        if not task_id or not amount:
-            return Response(
-                {'error': 'task_id et amount sont requis'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # التحقق من طريقة الدفع
-        valid_methods = ['bankily', 'sedad', 'masrivi']
-        if payment_method not in valid_methods:
-            return Response(
-                {'error': f'Méthode invalide. Utilisez: {", ".join(valid_methods)}'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        try:
-            # الحصول على المهمة
-            task = ServiceRequest.objects.get(id=task_id)
-            
-            # التحقق من أن المستخدم هو عميل المهمة
-            if task.client != user:
-                return Response(
-                    {'error': 'Vous n\'êtes pas le client de cette tâche'},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-            
-            # التحقق من أن المهمة مكتملة
-            if task.status != 'work_completed':
-                return Response(
-                    {'error': 'Le travailleur doit terminer le travail d\'abord'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # التحقق من عدم وجود دفع سابق
-            if hasattr(task, 'payment') and task.payment.is_completed:
-                return Response(
-                    {'error': 'Cette tâche a déjà été payée'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # إنشاء أو تحديث سجل الدفع
-            payment, created = Payment.objects.get_or_create(
-                task=task,
-                defaults={
-                    'payer': user,
-                    'receiver': task.assigned_worker,
-                    'amount': amount,
-                    'payment_method': payment_method,
-                    'status': 'pending',
-                }
-            )
-            
-            if not created and payment.is_completed:
-                return Response(
-                    {'error': 'Cette tâche a déjà été payée'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # إنشاء معرف فريد للمعاملة
-            transaction_id = f"TASK-{task.id}-PAY-{payment.id}"
-            
-            # إنشاء طلب دفع في Moosyl
-            moosyl_result = moosyl_service.create_payment_request(
-                amount=amount,
-                transaction_id=transaction_id,
-                phone_number=user.phone,  # ✅ إرسال رقم العميل
-            )
-            
-            if not moosyl_result.get('success'):
-                payment.mark_as_failed(reason=moosyl_result.get('error'))
-                return Response(
-                    {
-                        'error': 'Échec de l\'initialisation du paiement',
-                        'details': moosyl_result.get('message')
-                    },
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-            
-            # تحديث معلومات الدفع
-            payment.moosyl_transaction_id = moosyl_result.get('transaction_id')
-            payment.moosyl_response = moosyl_result.get('data')
-            payment.status = 'processing'
-            payment.save()
-            
-            # بناء رابط الدفع للـ Frontend
-            from django.conf import settings
-            publishable_key = settings.MOOSYL_PUBLISHABLE_KEY
-            
-            return Response({
-                'success': True,
-                'payment_id': payment.id,
-                'transaction_id': payment.moosyl_transaction_id,
-                'publishable_key': publishable_key,
-                'amount': float(amount),
-                'message': 'Paiement initialisé avec succès',
-            }, status=status.HTTP_201_CREATED)
-        
-        except ServiceRequest.DoesNotExist:
-            return Response(
-                {'error': 'Tâche non trouvée'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except Exception as e:
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+    serializer = UserTaskCounterSerializer(counter)
+    return Response(serializer.data)
 
 
-class VerifyMoosylPaymentView(APIView):
+# ================================
+# 3️⃣ إحصائيات للـ Admin
+# ================================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def task_counter_stats(request):
     """
-    التحقق من حالة الدفع
-    GET: /api/payments/moosyl/verify/<payment_id>/
+    ✅ إحصائيات عامة (للـ Admin فقط)
     """
-    permission_classes = [permissions.IsAuthenticated]
+    # التحقق من صلاحيات Admin
+    if not request.user.is_staff and not request.user.is_superuser:
+        return Response({
+            'error': 'صلاحيات غير كافية',
+            'error_fr': 'Permissions insuffisantes'
+        }, status=status.HTTP_403_FORBIDDEN)
     
-    def get(self, request, payment_id):
-        try:
-            # الحصول على الدفع
-            payment = Payment.objects.get(id=payment_id)
-            
-            # التحقق من الصلاحية
-            if payment.payer != request.user and payment.receiver != request.user:
-                return Response(
-                    {'error': 'Non autorisé'},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-            
-            # إذا كان الدفع مكتملاً مسبقاً
-            if payment.is_completed:
-                return Response({
-                    'status': 'completed',
-                    'message': 'Paiement déjà complété',
-                    'payment': PaymentSerializer(payment).data
-                })
-            
-            # التحقق من Moosyl
-            if payment.moosyl_transaction_id:
-                moosyl_result = moosyl_service.verify_payment(
-                    payment.moosyl_transaction_id
-                )
-                
-                if moosyl_result.get('success'):
-                    moosyl_status = moosyl_result.get('status')
-                    
-                    # تحديث حالة الدفع حسب حالة Moosyl
-                    if moosyl_status == 'paid':
-                        payment.mark_as_completed()
-                        
-                        # تحديث حالة المهمة إلى مكتملة
-                        task = payment.task
-                        task.status = 'completed'
-                        task.save()
-                        
-                        # إرسال إشعارات
-                        from notifications.utils import notify_payment_received, notify_payment_sent
-                        notify_payment_received(payment.payer, payment.task, payment.amount)
-                        notify_payment_sent(payment.receiver, payment.task, payment.amount)
-                        
-                        
-                        return Response({
-                            'status': 'completed',
-                            'message': 'Paiement complété avec succès',
-                            'payment': PaymentSerializer(payment).data
-                        })
-                    elif moosyl_status == 'cancelled':
-                        payment.mark_as_failed(reason="Paiement annulé")
-                        return Response({
-                            'status': 'failed',
-                            'message': 'Le paiement a été annulé',
-                        }, status=status.HTTP_400_BAD_REQUEST)
-                    
-                    else:
-                        # pending ou processing
-                        return Response({
-                            'status': moosyl_status,
-                            'message': 'Paiement en cours',
-                        })
-            
-            return Response({
-                'status': payment.status,
-                'message': 'État du paiement',
-            })
-        
-        except Payment.DoesNotExist:
-            return Response(
-                {'error': 'Paiement non trouvé'},
-                status=status.HTTP_404_NOT_FOUND
-            )
+    from django.db.models import Count, Sum, Avg
+    
+    stats = UserTaskCounter.objects.aggregate(
+        total_users=Count('id'),
+        total_tasks=Sum('accepted_tasks_count'),
+        avg_tasks_per_user=Avg('accepted_tasks_count'),
+        premium_users=Count('id', filter=models.Q(is_premium=True)),
+        users_at_limit=Count('id', filter=models.Q(accepted_tasks_count__gte=5, is_premium=False))
+    )
+    
+    return Response({
+        'statistics': stats,
+        'free_limit': 5,
+        'subscription_price': '8 MRU/mois'
+    })
 
 
-@csrf_exempt
+# ================================
+# 4️⃣ بدء الاشتراك (معطل - ينتظر Benkily)
+# ================================
+
 @api_view(['POST'])
-@permission_classes([])
-def moosyl_webhook(request):
+@permission_classes([IsAuthenticated])
+def initiate_subscription(request):
     """
-    Webhook لاستقبال إشعارات Moosyl
-    POST: /api/payments/moosyl/webhook/
+    🔮 بدء عملية الاشتراك الشهري
+    ❌ معطل حالياً - ينتظر ربط Benkily API
     """
-    try:
-        # الحصول على البيانات
-        payload = json.loads(request.body)
-        event = request.headers.get('X-Webhook-Event', '')
-        
-        print(f"🔔 Webhook received: {event}")
-        print(f"📦 Payload: {payload}")
-        
-        if event == 'payment-created':
-            transaction_id = payload.get('data', {}).get('id')
-            
-            if not transaction_id:
-                return JsonResponse({'error': 'Transaction ID manquant'}, status=400)
-            
-            # العثور على الدفع
-            try:
-                payment = Payment.objects.get(moosyl_transaction_id=transaction_id)
-            except Payment.DoesNotExist:
-                return JsonResponse({'error': 'Paiement non trouvé'}, status=404)
-            
-            # تحديث حالة الدفع إلى مكتمل
-            payment.mark_as_completed()
-            
-            # إرسال إشعارات
-            from notifications.utils import notify_payment_received, notify_payment_sent
-            notify_payment_received(payment.payer, payment.task, payment.amount)
-            notify_payment_sent(payment.receiver, payment.task, payment.amount)
-            
-            print(f"✅ Payment {payment.id} marked as completed")
-        
-        return JsonResponse({'success': True})
+    counter, created = UserTaskCounter.objects.get_or_create(
+        user=request.user
+    )
     
-    except Exception as e:
-        print(f"❌ Webhook error: {str(e)}")
-        return JsonResponse({'error': str(e)}, status=500)
+    # التحقق من الحاجة للاشتراك
+    if not counter.needs_payment and not request.user.is_staff:
+        return Response({
+            'error': 'لا تحتاج للاشتراك حالياً',
+            'error_fr': 'Pas besoin d\'abonnement pour le moment',
+            'tasks_remaining': counter.tasks_remaining_before_payment
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # 🔮 هنا سيتم إضافة كود Benkily لاحقاً
+    return Response({
+        'message': 'نظام الدفع قيد التطوير',
+        'message_fr': 'Système de paiement en développement',
+        'subscription_details': {
+            'amount': '8 MRU',
+            'currency': 'MRU',
+            'duration': '30 jours',
+            'payment_method': 'Benkily (قريباً)'
+        },
+        'note': 'يرجى التواصل مع الدعم الفني لتفعيل الاشتراك يدوياً'
+    }, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+# ================================
+# 5️⃣ تأكيد الدفع (Webhook - للمستقبل)
+# ================================
+
+@api_view(['POST'])
+def benkily_webhook(request):
+    """
+    🔮 Webhook لاستقبال إشعارات الدفع من Benkily
+    ❌ معطل حالياً
+    """
+    # 🔮 هنا سيتم معالجة Webhook من Benkily
+    return Response({
+        'message': 'Webhook غير مفعل حالياً'
+    }, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+# ================================
+# 6️⃣ تاريخ الاشتراكات
+# ================================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def my_subscriptions(request):
+    """
+    ✅ عرض تاريخ الاشتراكات للمستخدم
+    """
+    subscriptions = PlatformSubscription.objects.filter(
+        user=request.user
+    ).order_by('-created_at')
+    
+    serializer = PlatformSubscriptionSerializer(subscriptions, many=True)
+    
+    return Response({
+        'count': subscriptions.count(),
+        'subscriptions': serializer.data
+    })
+
+
+# ================================
+# 7️⃣ تفعيل اشتراك يدوياً (Admin فقط)
+# ================================
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def activate_subscription_manual(request, user_id):
+    """
+    ✅ تفعيل اشتراك يدوياً (للـ Admin فقط)
+    """
+    # التحقق من صلاحيات Admin
+    if not request.user.is_staff and not request.user.is_superuser:
+        return Response({
+            'error': 'صلاحيات غير كافية'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    from django.utils import timezone
+    from datetime import timedelta
+    from users.models import User
+    
+    # الحصول على المستخدم
+    target_user = get_object_or_404(User, id=user_id)
+    
+    # الحصول على أو إنشاء العداد
+    counter, created = UserTaskCounter.objects.get_or_create(
+        user=target_user
+    )
+    
+    # تفعيل Premium
+    counter.is_premium = True
+    counter.last_payment_date = timezone.now()
+    counter.save()
+    
+    # إنشاء سجل اشتراك
+    subscription = PlatformSubscription.objects.create(
+        user=target_user,
+        amount=800.00,  # 8 MRU
+        payment_method='other',
+        status='completed',
+        transaction_id=f'MANUAL-{timezone.now().timestamp()}',
+        valid_until=timezone.now() + timedelta(days=30)
+    )
+    
+    return Response({
+        'message': f'✅ تم تفعيل اشتراك {target_user.phone} بنجاح',
+        'subscription': PlatformSubscriptionSerializer(subscription).data,
+        'counter': UserTaskCounterSerializer(counter).data
+    })
+
+
+# ================================
+# 8️⃣ إعادة تعيين العداد (Admin فقط)
+# ================================
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def reset_counter_manual(request, user_id):
+    """
+    ✅ إعادة تعيين العداد يدوياً (للـ Admin فقط)
+    """
+    # التحقق من صلاحيات Admin
+    if not request.user.is_staff and not request.user.is_superuser:
+        return Response({
+            'error': 'صلاحيات غير كافية'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    from users.models import User
+    
+    # الحصول على المستخدم
+    target_user = get_object_or_404(User, id=user_id)
+    
+    # الحصول على العداد
+    counter = get_object_or_404(UserTaskCounter, user=target_user)
+    
+    # إعادة تعيين
+    counter.reset_counter()
+    
+    return Response({
+        'message': f'✅ تم إعادة تعيين عداد {target_user.phone} بنجاح',
+        'counter': UserTaskCounterSerializer(counter).data
+    })
+
+
+# ================================
+# 9️⃣ API قديمة معطلة
+# ================================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def payment_system_disabled(request):
+    """
+    ✅ إشعار بأن نظام الدفع بين العميل والعامل معطل
+    """
+    return Response({
+        'message': 'نظام الدفع بين العميل والعامل معطل',
+        'message_fr': 'Le système de paiement entre client et travailleur est désactivé',
+        'note': 'العمل يتم خارج التطبيق بعد قبول العامل',
+        'note_fr': 'Le travail se fait en dehors de l\'application après acceptation',
+        'new_system': {
+            'name': 'نظام عداد المهام',
+            'name_fr': 'Système de compteur de tâches',
+            'limit': '5 مهام مجانية',
+            'subscription': '8 MRU/شهر',
+            'api': '/api/payments/check-limit/'
+        }
+    }, status=status.HTTP_200_OK)

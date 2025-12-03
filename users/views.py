@@ -7,15 +7,19 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.db import transaction
 from django.shortcuts import get_object_or_404
-from .models import User, WorkerProfile, ClientProfile
+from .models import User, WorkerProfile, ClientProfile,SavedLocation
 from .utils import to_e164
+from django.utils import timezone
+from rest_framework import generics 
 from .serializers import (
     ChangePasswordSerializer, RegisterSerializer, VerifySerializer, LoginSerializer,
     PasswordResetStartSerializer, PasswordResetConfirmSerializer,
     ResendOTPSerializer, UserSerializer, WorkerProfileUpdateSerializer, 
     ClientProfileUpdateSerializer, WorkerOnboardingSerializer, 
     LocationUpdateSerializer, LocationSharingToggleSerializer, 
-    WorkerProfileSerializer, ClientProfileSerializer
+    WorkerProfileSerializer, ClientProfileSerializer,
+    SavedLocationSerializer, SavedLocationCreateSerializer, 
+    SavedLocationUpdateSerializer
 )
 from .services import (
     start_registration, verify_otp, resend_registration,
@@ -817,6 +821,112 @@ def get_worker_location_info(request):
             "is_available_with_location": worker_profile.is_currently_available_with_location
         }
     }, status=status.HTTP_200_OK)
+
+# ====== Views إدارة المواقع المحفوظة ======
+
+class SavedLocationsListView(generics.ListAPIView):
+    """
+    قائمة المواقع المحفوظة للمستخدم
+    GET /api/users/saved-locations/
+    """
+    serializer_class = SavedLocationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        """إرجاع المواقع المحفوظة للمستخدم الحالي فقط"""
+        return SavedLocation.objects.filter(
+            user=self.request.user
+        ).order_by('-usage_count', '-last_used_at')[:10]  # أكثر 10 مواقع استخداماً
+
+
+class SavedLocationCreateView(generics.CreateAPIView):
+    """
+    إضافة موقع جديد أو تحديث موقع موجود
+    POST /api/users/saved-locations/
+    """
+    serializer_class = SavedLocationCreateSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({
+                "code": "validation_error",
+                "detail": serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # تقريب الإحداثيات لتجنب التكرار
+        latitude = round(float(serializer.validated_data['latitude']), 5)
+        longitude = round(float(serializer.validated_data['longitude']), 5)
+        
+        # تحقق: هل الموقع موجود؟
+        saved_location, created = SavedLocation.objects.get_or_create(
+            user=request.user,
+            latitude=latitude,
+            longitude=longitude,
+            defaults={
+                'address': serializer.validated_data['address'],
+                'name': serializer.validated_data.get('name', ''),
+                'emoji': serializer.validated_data.get('emoji', '📍'),
+                'usage_count': 1,
+            }
+        )
+        
+        if not created:
+            # الموقع موجود → زيادة العداد
+            saved_location.usage_count += 1
+            saved_location.last_used_at = timezone.now()
+            # تحديث الاسم إذا كان فارغاً وتم إرسال اسم جديد
+            if not saved_location.name and serializer.validated_data.get('name'):
+                saved_location.name = serializer.validated_data['name']
+            saved_location.save()
+        
+        response_serializer = SavedLocationSerializer(saved_location)
+        return Response({
+            "success": True,
+            "message": "تم حفظ الموقع بنجاح" if created else "تم تحديث الموقع",
+            "created": created,
+            "data": response_serializer.data
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+class SavedLocationUpdateView(generics.UpdateAPIView):
+    """
+    تحديث اسم وإيموجي الموقع
+    PATCH /api/users/saved-locations/<id>/
+    """
+    serializer_class = SavedLocationUpdateSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        """المستخدم يمكنه تعديل مواقعه فقط"""
+        return SavedLocation.objects.filter(user=self.request.user)
+    
+    def update(self, request, *args, **kwargs):
+        kwargs['partial'] = True
+        return super().update(request, *args, **kwargs)
+
+
+class SavedLocationDeleteView(generics.DestroyAPIView):
+    """
+    حذف موقع محفوظ
+    DELETE /api/users/saved-locations/<id>/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        """المستخدم يمكنه حذف مواقعه فقط"""
+        return SavedLocation.objects.filter(user=self.request.user)
+    
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        self.perform_destroy(instance)
+        return Response({
+            "success": True,
+            "message": "تم حذف الموقع بنجاح"
+        }, status=status.HTTP_200_OK)
+
+
 
 # في users/views.py - أضف helper function للحصول على IP
 
