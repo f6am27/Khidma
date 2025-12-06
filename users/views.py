@@ -19,7 +19,9 @@ from .serializers import (
     LocationUpdateSerializer, LocationSharingToggleSerializer, 
     WorkerProfileSerializer, ClientProfileSerializer,
     SavedLocationSerializer, SavedLocationCreateSerializer, 
-    SavedLocationUpdateSerializer
+    SavedLocationUpdateSerializer,AccountSuspensionSerializer, 
+    AccountSuspensionStatusSerializer
+
 )
 from .services import (
     start_registration, verify_otp, resend_registration,
@@ -135,68 +137,81 @@ class LoginView(APIView):
                 "detail": serializer.errors
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # المستخدم تم التحقق منه في serializer
         user = serializer.validated_data['user']
         
-        # ✅ فحص حالة التعليق
+        # ✅ فك التعليق التلقائي (فقط للتعليق بواسطة العامل نفسه)
         if user.is_suspended:
-            from django.utils import timezone
-            
-            if user.suspended_until:
-                # تعليق مؤقت
-                now = timezone.now()
-                if now < user.suspended_until:
-                    # الحساب لا يزال معلقاً
-                    time_remaining = user.suspended_until - now
-                    days_remaining = time_remaining.days
-                    hours_remaining = time_remaining.seconds // 3600
-                    jour_text = "jour" if days_remaining <= 1 else "jours"
-                    heure_text = "heure" if hours_remaining <= 1 else "heures"
+            # تعليق العامل لنفسه = suspension_reason يحتوي على "Suspension temporaire par le prestataire"
+            if user.suspension_reason == "Suspension temporaire par le prestataire":
+                # ✅ إلغاء التعليق تلقائياً
+                User.objects.filter(id=user.id).update(
+                    is_suspended=False,
+                    suspension_reason=''
+                )
+                user.refresh_from_db()
+            else:
+                # تعليق من الأدمن - فحص التاريخ
+                if user.suspended_until:
+                    # تعليق مؤقت من الأدمن
+                    now = timezone.now()
+                    if now < user.suspended_until:
+                        time_remaining = user.suspended_until - now
+                        days_remaining = time_remaining.days
+                        hours_remaining = time_remaining.seconds // 3600
+                        
+                        # ✅ رسالة بالفرنسية
+                        suspension_message = (
+                            f"Votre compte est temporairement suspendu jusqu'au {user.suspended_until.strftime('%d/%m/%Y à %H:%M')}.\n"
+                            f"Temps restant : {days_remaining} jour(s) et {hours_remaining} heure(s).\n"
+                            f"Raison : {user.suspension_reason}\n"
+                            f"Pour toute question, contactez le support : khidma.helpp@gmail.com"
+                        )
+                        
+                        return Response({
+                            "code": "account_suspended",
+                            "detail": suspension_message,
+                            "suspended_until": user.suspended_until.isoformat(),
+                            "days_remaining": days_remaining,
+                            "hours_remaining": hours_remaining,
+                            "suspension_reason": user.suspension_reason,
+                            "support_email": "khidma.helpp@gmail.com"
+                        }, status=status.HTTP_403_FORBIDDEN)
+                    else:
+                        # انتهى وقت التعليق
+                        User.objects.filter(id=user.id).update(
+                            is_suspended=False,
+                            suspended_until=None,
+                            suspension_reason=''
+                        )
+                        user.refresh_from_db()
+                else:
+                    # تعليق نهائي من الأدمن
                     suspension_message = (
-                        f"Votre compte est temporairement suspendu jusqu'au {user.suspended_until.strftime('%d/%m/%Y à %H:%M')}.\n"
-                        f"Temps restant : {days_remaining} {jour_text} et {hours_remaining} {heure_text}.\n"
+                        f"Votre compte a été définitivement suspendu.\n"
+                        f"Raison : {user.suspension_reason}\n"
                         f"Pour toute question, contactez le support : khidma.helpp@gmail.com"
                     )
                     
                     return Response({
-                        "code": "account_suspended",
+                        "code": "account_permanently_suspended",
                         "detail": suspension_message,
-                        "suspended_until": user.suspended_until.isoformat(),
-                        "days_remaining": days_remaining,
-                        "hours_remaining": hours_remaining,
+                        "suspension_reason": user.suspension_reason,
                         "support_email": "khidma.helpp@gmail.com"
                     }, status=status.HTTP_403_FORBIDDEN)
-                else:
-                    # انتهى وقت التعليق - إعادة التفعيل تلقائياً
-                    user.is_suspended = False
-                    user.suspended_until = None
-                    user.suspension_reason = ''
-                    user.save(update_fields=['is_suspended', 'suspended_until', 'suspension_reason'])
-            else:
-                # تعليق نهائي (permanent ban)
-                return Response({
-                    "code": "account_permanently_suspended",
-                    "detail": (
-                        "تم إيقاف حسابك نهائياً.\n"
-                        "للاستفسار، تواصل مع الدعم الفني: khidma.helpp@gmail.com"
-                    ),
-                    "support_email": "khidma.helpp@gmail.com"
-                }, status=status.HTTP_403_FORBIDDEN)
         
-        # ✅ تحديث is_online و is_available عند تسجيل الدخول
+        # ✅ تحديث is_online و is_available
         if user.is_worker and hasattr(user, 'worker_profile'):
-            user.worker_profile.is_online = True
-            user.worker_profile.is_available = True
-            user.worker_profile.location_sharing_enabled = True
-            user.worker_profile.save(update_fields=['is_online', 'is_available', 'location_sharing_enabled'])
+            WorkerProfile.objects.filter(user=user).update(
+                is_online=True,
+                is_available=True,
+                location_sharing_enabled=True
+            )
         
-        # ✅✅✅ إضافة تحديث is_online للعميل ✅✅✅
         elif user.is_client:
             client_profile, created = ClientProfile.objects.get_or_create(user=user)
             client_profile.set_online()
-        # ✅✅✅ نهاية الإضافة ✅✅✅
         
-        # ✅ حفظ Device Token
+        # حفظ Device Token
         device_token = request.data.get('device_token')
         device_name = request.data.get('device_name', 'Unknown Device')
         platform = request.data.get('platform', 'unknown')
@@ -213,9 +228,7 @@ class LoginView(APIView):
                 }
             )
         
-        # إنشاء JWT tokens
         refresh = RefreshToken.for_user(user)
-
         return Response({
             "access": str(refresh.access_token),
             "refresh": str(refresh),
@@ -938,3 +951,57 @@ def get_client_ip(request):
     else:
         ip = request.META.get('REMOTE_ADDR')
     return ip
+
+class SuspendAccountView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        if not request.user.is_worker:
+            return Response({"code": "not_worker", "detail": "Service réservé aux prestataires"}, status=403)
+        
+        serializer = AccountSuspensionSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({"code": "validation_error", "detail": serializer.errors}, status=400)
+        
+        should_suspend = serializer.validated_data['suspend']
+        user = request.user
+        
+        if should_suspend:
+            # ✅ استخدم update بدلاً من save لتجنب مشكلة email
+            User.objects.filter(id=user.id).update(
+                is_suspended=True,
+                suspension_reason="Suspension temporaire par le prestataire"
+            )
+            
+            if hasattr(user, 'worker_profile'):
+                # ✅ لا تستورد WorkerProfile - استخدم user.worker_profile مباشرة
+                WorkerProfile.objects.filter(user=user).update(
+                    is_online=False,
+                    is_available=False,
+                    location_sharing_enabled=False,
+                    location_status='disabled'
+                )
+            
+            return Response({"success": True, "message": "Compte suspendu avec succès"}, status=200)
+        else:
+            # ✅ استخدم update بدلاً من save
+            User.objects.filter(id=user.id).update(
+                is_suspended=False,
+                suspension_reason=""
+            )
+            
+            if hasattr(user, 'worker_profile'):
+                # ✅ لا تستورد WorkerProfile - استخدم user.worker_profile مباشرة
+                WorkerProfile.objects.filter(user=user).update(
+                    is_online=True,
+                    is_available=True
+                )
+            
+            return Response({"success": True, "message": "Suspension annulée avec succès"}, status=200)
+        
+class SuspensionStatusView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        user = request.user
+        return Response({"is_suspended": user.is_suspended}, status=200)

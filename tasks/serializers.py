@@ -397,7 +397,6 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
             role='worker',
             is_verified=True,
             onboarding_completed=True,
-            worker_profile__is_available=True,
             worker_profile__service_category=task.service_category
         ).distinct()
         

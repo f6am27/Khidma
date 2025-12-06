@@ -19,15 +19,16 @@ class User(AbstractUser):
     # حقل email (للأدمن إجباري، للآخرين اختياري)
     email = models.EmailField(
         unique=True,
-        null=True, blank=True,
+        blank=True,
+        default='',
         help_text="البريد الإلكتروني - للأدمن إجباري، للآخرين اختياري"
     )
-    
     # الحقول الأساسية
     phone = models.CharField(
         max_length=20, 
         unique=True,
-        null=True, blank=True,
+        blank=True,
+        default='',
         help_text="رقم الهاتف للعميل/العامل"
     )
     
@@ -92,6 +93,7 @@ class User(AbstractUser):
         verbose_name = "User"
         verbose_name_plural = "Users"
         ordering = ['-created_at']
+ 
         
     def clean(self):
         """التحقق من صحة البيانات"""
@@ -100,15 +102,19 @@ class User(AbstractUser):
         if self.role in ['client', 'worker']:
             if not self.phone:
                 raise ValidationError("Client/Worker must have phone")
-            # للعملاء والعمال: email اختياري
+            # ✅ للعملاء والعمال: اجعل email فارغ نهائياً
+            if not self.email:
+                # ✅ نضع قيمة فريدة بدلاً من string فارغ
+                self.email = f"noemail_{self.phone}@placeholder.local"
                 
         elif self.role == 'admin':
             if not self.email:
                 raise ValidationError("Admin must have email")
-            # للأدمن: phone اختياري
-    
+        
     def save(self, *args, **kwargs):
-        self.clean()
+        # ✅ تطبيق clean قبل الحفظ
+        if not self.pk:  # فقط للمستخدمين الجدد
+            self.clean()
         super().save(*args, **kwargs)
     
     def __str__(self):
@@ -242,8 +248,11 @@ class WorkerProfile(models.Model):
     
     # البيانات الأساسية (من صفحة Onboarding)
     bio = models.TextField(
+        blank=True,
+        default='',
         help_text="وصف الخدمة من صفحة Onboarding"
     )
+
     service_area = models.CharField(
         max_length=200, 
         help_text="منطقة الخدمة - مطلوب"
@@ -257,6 +266,8 @@ class WorkerProfile(models.Model):
     base_price = models.DecimalField(
         max_digits=10, 
         decimal_places=2,
+        null=True,
+        blank=True,
         validators=[MinValueValidator(100.0)],
         help_text="السعر المعتاد من Onboarding"
     )
@@ -269,15 +280,22 @@ class WorkerProfile(models.Model):
     
     # التوفر (من صفحة Onboarding)
     available_days = models.JSONField(
-        default=list, 
+        default=list,
+        blank=True,
         help_text="الأيام المتاحة: ['monday', 'tuesday', ...]"
     )
+
     work_start_time = models.TimeField(
+        null=True,
+        blank=True,
         help_text="ساعة بداية العمل"
     )
+
     work_end_time = models.TimeField(
-        help_text="ساعة نهاية العمل"
-    )
+    null=True,
+    blank=True,
+    help_text="ساعة نهاية العمل"
+)
     
     # الموقع (اختياري - للمستقبل)
     latitude = models.DecimalField(

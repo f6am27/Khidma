@@ -7,7 +7,6 @@ from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Q, Count
 from django.utils import timezone
 from datetime import timedelta
-
 from .models import Notification, NotificationSettings
 from .serializers import (
     NotificationSerializer,
@@ -17,6 +16,41 @@ from .serializers import (
     BulkNotificationSerializer,
     NotificationCreateSerializer
 )
+# في أول notifications/views.py
+# أضف هذه الدالة بعد الـ imports مباشرة
+
+
+def auto_cleanup_user_notifications(user):
+    """
+    تنظيف تلقائي لإشعارات المستخدم القديمة
+    يعمل في الخلفية بدون تأثير على الأداء
+    """
+    now = timezone.now()
+    
+    # تحديد المدد حسب دور المستخدم
+    if user.role == 'admin':
+        # إشعارات الأدمن: 90 يوم
+        cutoff_date = now - timedelta(days=90)
+        Notification.objects.filter(
+            recipient=user,
+            created_at__lt=cutoff_date
+        ).delete()
+    else:
+        # إشعارات مقروءة: 30 يوم
+        read_cutoff = now - timedelta(days=30)
+        Notification.objects.filter(
+            recipient=user,
+            is_read=True,
+            read_at__lt=read_cutoff
+        ).delete()
+        
+        # إشعارات غير مقروءة: 60 يوم
+        unread_cutoff = now - timedelta(days=60)
+        Notification.objects.filter(
+            recipient=user,
+            is_read=False,
+            created_at__lt=unread_cutoff
+        ).delete()
 
 
 class NotificationListView(generics.ListAPIView):
@@ -33,6 +67,10 @@ class NotificationListView(generics.ListAPIView):
         """الحصول على إشعارات المستخدم الحالي فقط"""
         user = self.request.user
         
+        # ✨ تنظيف تلقائي (سطر واحد فقط)
+        auto_cleanup_user_notifications(user)
+        
+        # باقي الكود كما هو...
         queryset = Notification.objects.filter(
             recipient=user
         ).select_related(
@@ -240,6 +278,7 @@ class NotificationStatsView(generics.RetrieveAPIView):
     def get_object(self):
         """حساب إحصائيات الإشعارات"""
         user = self.request.user
+        auto_cleanup_user_notifications(user)
         notifications = Notification.objects.filter(recipient=user)
         
         # إحصائيات عامة

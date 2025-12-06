@@ -21,10 +21,10 @@ class UserManager(BaseUserManager):
                 raise ValueError('Admin users must use email')
             email = self.normalize_email(identifier)
             # للأدمن: استخدام email في User مباشرة، بدون phone
-            user = self.model(email=email, phone=None, role=role, **extra_fields)
+            user = self.model(email=email, phone='', role=role, **extra_fields)
         else:
             # client or worker: استخدام phone فقط، email فارغ
-            user = self.model(phone=identifier, email=None, role=role, **extra_fields)
+            user = self.model(phone=identifier, email='', role=role, **extra_fields)
         
         user.set_password(password)
         user.save(using=self._db)
@@ -58,16 +58,16 @@ class UserManager(BaseUserManager):
     def create_client(self, phone, password, **extra_fields):
         """إنشاء عميل"""
         extra_fields.setdefault('role', 'client')
-        return self.create_user(phone, password, 'client', **extra_fields)
+        return self.create_user(phone, password, role='client', **extra_fields)    
     
     def create_worker(self, phone, password, **extra_fields):
         """إنشاء عامل"""
         extra_fields.setdefault('role', 'worker')
-        return self.create_user(phone, password, 'worker', **extra_fields)
+        return self.create_user(phone, password, role='worker', **extra_fields)
     
     def create_admin(self, email, password, **extra_fields):
         """إنشاء أدمن"""
         extra_fields.setdefault('role', 'admin')
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_verified', True)  # الأدمن محقق تلقائياً
-        return self.create_user(email, password, 'admin', **extra_fields)
+        return self.create_user(email, password, role='admin', **extra_fields)

@@ -74,7 +74,7 @@ class UserAdmin(BaseUserAdmin):
                     '<span style="color:orange;">Suspended until {}</span>',
                     obj.suspended_until.strftime('%Y-%m-%d')
                 )
-            return format_html('<span style="color:red;">Permanently Suspended</span>')
+            return format_html('<span style="color:red;"> Suspended</span>')
         if not obj.is_active:
             return format_html('<span style="color:gray;">Inactive</span>')
         return format_html('<span style="color:green;">Active</span>')

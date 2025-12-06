@@ -61,38 +61,34 @@ class LoginSerializer(serializers.Serializer):
 
         user = None
         
-        # محاولة التحقق من أنه رقم هاتف
         try:
             phone_e164 = to_e164(identifier)
-            # البحث عن المستخدم بالهاتف
             try:
                 user = User.objects.get(phone=phone_e164)
             except User.DoesNotExist:
-                pass  # لم يجد بالهاتف، سيجرب first_name
+                pass
         except ValueError:
-            # ليس رقم هاتف صالح
             pass
         
-        # إذا لم يجد بالهاتف، جرب first_name
         if not user:
             try:
                 user = User.objects.get(first_name=identifier)
             except User.DoesNotExist:
                 pass
         
-        # إذا لم يجد المستخدم بأي طريقة
         if not user:
             raise serializers.ValidationError("Invalid credentials")
 
-        # التحقق من كلمة المرور
         if not user.check_password(password):
             raise serializers.ValidationError("Invalid credentials")
 
-        # ✅✅✅ التعديل هنا ✅✅✅
-        # السماح للحسابات المعلقة بالمرور - سيتم الفحص في LoginView
-        if not user.is_active and not user.is_suspended:
+        # ✅ السماح لجميع الحسابات المعلقة بالمرور
+        # سيتم الفحص الدقيق في LoginView
+        # - تعليق الأدمن: سيُمنع في LoginView
+        # - تعليق العامل: سيُلغى في LoginView
+        
+        if not user.is_active:
             raise serializers.ValidationError("User account is disabled")
-        # ✅✅✅ نهاية التعديل ✅✅✅
 
         attrs['user'] = user
         return attrs
@@ -277,10 +273,23 @@ class WorkerOnboardingSerializer(serializers.ModelSerializer):
     class Meta:
         model = WorkerProfile
         fields = [
-            'first_name', 'last_name', 'bio', 'service_area',
-            'service_category', 'base_price', 'available_days',
-            'work_start_time', 'work_end_time'
+            'first_name',
+            'last_name',
+            'bio',
+            'service_area',
+            'service_category',
+            'base_price',
+            'available_days',
+            'work_start_time',
+            'work_end_time'
         ]
+        extra_kwargs = {
+            'bio': {'required': False, 'allow_blank': True},
+            'base_price': {'required': False, 'allow_null': True},
+            'available_days': {'required': False},
+            'work_start_time': {'required': False, 'allow_null': True},
+            'work_end_time': {'required': False, 'allow_null': True},
+        }
     
     def create(self, validated_data):
         user_data = validated_data.pop('user', {})
@@ -372,3 +381,13 @@ class SavedLocationUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = SavedLocation
         fields = ['name', 'emoji']
+
+class AccountSuspensionSerializer(serializers.Serializer):
+    suspend = serializers.BooleanField(required=True)
+
+class AccountSuspensionStatusSerializer(serializers.Serializer):
+    is_suspended = serializers.BooleanField(read_only=True)
+    suspended_until = serializers.DateTimeField(read_only=True, allow_null=True)
+    suspension_reason = serializers.CharField(read_only=True)
+    suspension_active = serializers.BooleanField(read_only=True)
+    days_remaining = serializers.IntegerField(read_only=True, allow_null=True)

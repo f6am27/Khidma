@@ -9,7 +9,9 @@ from .views import (
     update_worker_location, toggle_location_sharing, get_worker_location_info,
     ChangePasswordView,LogoutView,SetWorkerOnlineView,
     SavedLocationsListView, SavedLocationCreateView, 
-    SavedLocationUpdateView, SavedLocationDeleteView
+    SavedLocationUpdateView, SavedLocationDeleteView,
+    SuspendAccountView, SuspensionStatusView
+
 
 )
 from .upload_views import (
@@ -67,6 +69,6 @@ urlpatterns = [
     path('saved-locations/create/', SavedLocationCreateView.as_view(), name='saved_location_create'),
     path('saved-locations/<int:pk>/', SavedLocationUpdateView.as_view(), name='saved_location_update'),
     path('saved-locations/<int:pk>/delete/', SavedLocationDeleteView.as_view(), name='saved_location_delete'),
-
-    
+    path('suspend-account/', SuspendAccountView.as_view()),
+    path('suspension-status/', SuspensionStatusView.as_view()),
 ]

@@ -154,12 +154,24 @@ def verify_otp(phone: str, code: str):
         role = data.get("role", "client")
         username = data.get("username", "")
         
+        # ✅ حذف أي user قديم غير مكتمل بنفس الرقم
+        try:
+            existing_user = User.objects.get(phone=phone)
+            if not existing_user.is_verified:
+                print(f"🗑️ Deleting unverified user: {phone}")
+                existing_user.delete()
+            else:
+                # المستخدم موجود ومُحقق مسبقاً!
+                return {"error": ("user_already_exists", "المستخدم مسجل مسبقاً")}
+        except User.DoesNotExist:
+            pass  # لا يوجد user قديم، كل شيء على ما يرام
+        
         # إنشاء User جديد باستخدام المدير المخصص
         user = User.objects.create_user(
-            identifier=phone,  # phone للعميل/العامل
+            identifier=phone,
             password=data["password"],
             role=role,
-            first_name=username,  # استخدام username كـ first_name
+            first_name=username,
             is_verified=True
         )
         
@@ -175,8 +187,6 @@ def verify_otp(phone: str, code: str):
 
     cache.delete(k)
     return {"ok": {"message": "تم التحقق وإنشاء الحساب بنجاح"}}
-
-
 # ==============================
 # استعادة كلمة المرور
 # ==============================
