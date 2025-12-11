@@ -3,17 +3,18 @@ from rest_framework.views import APIView
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import status, permissions, generics
-from django.db.models import Count, Sum, Avg, Q
+from django.db.models import Count, Sum, Avg, Q, Max
 from django.utils import timezone
 from datetime import timedelta
 from django.shortcuts import get_object_or_404
 from users.models import User, WorkerProfile, ClientProfile,AdminProfile
 from tasks.models import ServiceRequest, TaskApplication, TaskReview
-# from payments.models import Payment  # ❌ معطل مؤقتاً
 from chat.models import Report, Conversation, Message
 from services.models import ServiceCategory, NouakchottArea
 from notifications.models import Notification,NotificationSettings
 from notifications.serializers import NotificationListSerializer
+from rest_framework.permissions import IsAuthenticated, IsAdminUser
+from complaints.models import Complaint
 from .email_service import (
     generate_otp, 
     send_password_reset_email, 
@@ -37,7 +38,9 @@ from .serializers import (
     AdminPasswordResetRequestSerializer,
     AdminPasswordResetConfirmSerializer
 )
-
+from workers.models import WorkerService 
+from payments.models import UserTaskCounter  
+ 
 
 # ==================== Admin Authentication ====================
 class AdminLoginView(APIView):
@@ -132,6 +135,11 @@ def dashboard_stats(request):
     # Reports Stats
     pending_reports = Report.objects.filter(status='pending').count()
     resolved_reports = Report.objects.filter(status='resolved').count()
+    total_complaints = Complaint.objects.count()
+    new_complaints_count = Complaint.objects.filter(status='new').count()
+    pending_complaints_count = Complaint.objects.filter(
+        status__in=['new', 'under_review']
+    ).count()
     
     # Growth Rates
     last_month_users = User.objects.filter(
@@ -163,7 +171,10 @@ def dashboard_stats(request):
         'pending_reports': pending_reports,
         'resolved_reports': resolved_reports,
         'user_growth_rate': round(user_growth_rate, 2),
-        'task_completion_rate': round(task_completion_rate, 2)
+        'task_completion_rate': round(task_completion_rate, 2),
+        'total_complaints': total_complaints,
+        'new_complaints': new_complaints_count,
+        'pending_complaints': pending_complaints_count
     }
     
     serializer = DashboardStatsSerializer(data)
@@ -810,3 +821,819 @@ class AdminNotificationSettingsView(generics.RetrieveUpdateAPIView):
     def get_serializer_class(self):
         from notifications.serializers import NotificationSettingsSerializer
         return NotificationSettingsSerializer
+    
+# ================================
+# 📊 STATISTICS & ANALYTICS APIs
+# ================================
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAdminUser])
+def top_rated_users(request):
+    """
+    ✅ 1. المستخدمون الأكثر تقييماً (للمكافأة)
+    GET /api/admin/analytics/top-rated/
+    Query params:
+    - limit: عدد النتائج (default: 10)
+    - min_reviews: حد أدنى للتقييمات (default: 5)
+    """
+    from .serializers import TopRatedUserSerializer
+    
+    # Filters
+    limit = int(request.query_params.get('limit', 10))
+    min_reviews = int(request.query_params.get('min_reviews', 2))
+    
+    # جلب العمال مع التقييمات
+    workers = User.objects.filter(
+        role='worker',
+        worker_profile__isnull=False
+    ).select_related('worker_profile').annotate(
+        avg_rating=Avg('received_reviews__rating'),
+        review_count=Count('received_reviews')
+    ).filter(
+        review_count__gte=min_reviews,
+        avg_rating__isnull=False
+    ).order_by('-avg_rating', '-review_count')[:limit]
+    
+    # تحضير البيانات
+    data = []
+    for worker in workers:
+        profile = worker.worker_profile
+        
+        # رابط الصورة
+        profile_image_url = None
+        if profile and profile.profile_image:
+            profile_image_url = request.build_absolute_uri(profile.profile_image.url)
+        
+        data.append({
+            'user_id': worker.id,
+            'user_name': worker.get_full_name() or worker.phone,
+            'phone': worker.phone,
+            'role': worker.role,
+            'average_rating': float(worker.avg_rating or 0),
+            'total_reviews': worker.review_count,
+            'total_jobs_completed': profile.total_jobs_completed if profile else 0,
+            'date_joined': worker.date_joined,
+            'profile_image_url': profile_image_url
+        })
+    
+    serializer = TopRatedUserSerializer(data, many=True)
+    
+    return Response({
+        'success': True,
+        'data': serializer.data,
+        'count': len(data),
+        'filters': {
+            'limit': limit,
+            'min_reviews': min_reviews
+        }
+    })
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAdminUser])
+def most_reported_users(request):
+    """
+    ✅ 2. المستخدمون الأكثر بلاغات
+    GET /api/admin/analytics/most-reported/
+    Query params:
+    - limit: عدد النتائج (default: 20)
+    - status: pending/resolved/dismissed
+    - role: worker/client
+    """
+    from .serializers import MostReportedUserSerializer
+    
+    # Filters
+    limit = int(request.query_params.get('limit', 20))
+    status_filter = request.query_params.get('status')
+    role_filter = request.query_params.get('role')
+    
+    # إحصاء البلاغات لكل مستخدم
+    reports_query = Report.objects.values('reported_user').annotate(
+        total_reports=Count('id'),
+        pending_reports=Count('id', filter=Q(status='pending')),
+        resolved_reports=Count('id', filter=Q(status='resolved')),
+        dismissed_reports=Count('id', filter=Q(status='dismissed')),
+        last_report=Max('created_at')
+    ).order_by('-total_reports')
+    
+    # فلترة حسب الحالة
+    if status_filter:
+        reports_query = reports_query.filter(
+            **{f'{status_filter}_reports__gt': 0}
+        )
+    
+    # جلب المستخدمين
+    user_ids = [r['reported_user'] for r in reports_query[:limit]]
+    users = User.objects.filter(id__in=user_ids)
+    
+    # فلترة حسب النوع
+    if role_filter:
+        users = users.filter(role=role_filter)
+    
+    # تحضير البيانات
+    reports_dict = {r['reported_user']: r for r in reports_query}
+    
+    data = []
+    for user in users:
+        report_data = reports_dict.get(user.id, {})
+        
+        data.append({
+            'user_id': user.id,
+            'user_name': user.get_full_name() or user.phone,
+            'phone': user.phone,
+            'role': user.role,
+            'total_reports': report_data.get('total_reports', 0),
+            'pending_reports': report_data.get('pending_reports', 0),
+            'resolved_reports': report_data.get('resolved_reports', 0),
+            'dismissed_reports': report_data.get('dismissed_reports', 0),
+            'last_report_date': report_data.get('last_report'),
+            'is_suspended': user.is_suspended,
+            'suspension_reason': user.suspension_reason or None
+        })
+    
+    # ترتيب حسب العدد الكلي
+    data.sort(key=lambda x: x['total_reports'], reverse=True)
+    
+    serializer = MostReportedUserSerializer(data, many=True)
+    
+    return Response({
+        'success': True,
+        'data': serializer.data,
+        'count': len(data),
+        'filters': {
+            'limit': limit,
+            'status': status_filter,
+            'role': role_filter
+        }
+    })
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAdminUser])
+def subscription_analytics(request):
+    """
+    إحصائيات الاشتراكات والمستخدمين Premium/Free
+    GET /api/admin/analytics/subscriptions/
+    """
+    if not request.user.is_staff and not request.user.role == 'admin':
+        return Response({
+            'success': False,
+            'error': 'Unauthorized - Admin access only'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        from payments.models import UserTaskCounter
+        
+        # ✅ إحصائيات المستخدمين
+        total_users = User.objects.filter(role__in=['client', 'worker']).count()
+        
+        # ✅ حساب Premium vs Free من UserTaskCounter
+        premium_users = UserTaskCounter.objects.filter(is_premium=True).count()
+        free_users = UserTaskCounter.objects.filter(is_premium=False).count()
+        
+        # ✅ المستخدمين عند 4 مهام (على وشك الوصول للحد)
+        users_at_4_tasks = UserTaskCounter.objects.filter(
+            accepted_tasks_count=4,
+            is_premium=False
+        ).count()
+        
+        # ✅ المستخدمين عند 5 مهام (وصلوا للحد المجاني)
+        users_at_5_tasks = UserTaskCounter.objects.filter(
+            accepted_tasks_count__gte=5,
+            is_premium=False
+        ).count()
+        
+        # ✅ معدل التحويل (Conversion Rate)
+        conversion_rate = 0.0
+        if total_users > 0:
+            conversion_rate = round((premium_users / total_users) * 100, 2)
+        
+        # ✅ الإيرادات المحتملة شهرياً (8 MRU × عدد Premium)
+        monthly_revenue_potential = premium_users * 8
+        
+        # ✅ تفصيل Premium vs Free حسب الدور
+        premium_clients = UserTaskCounter.objects.filter(
+            is_premium=True,
+            user__role='client'
+        ).count()
+        
+        premium_workers = UserTaskCounter.objects.filter(
+            is_premium=True,
+            user__role='worker'
+        ).count()
+        
+        free_clients = UserTaskCounter.objects.filter(
+            is_premium=False,
+            user__role='client'
+        ).count()
+        
+        free_workers = UserTaskCounter.objects.filter(
+            is_premium=False,
+            user__role='worker'
+        ).count()
+        
+        return Response({
+            'success': True,
+            'data': {
+                'total_users': total_users,
+                'premium_users': premium_users,
+                'free_users': free_users,
+                'users_at_4_tasks': users_at_4_tasks,
+                'users_at_5_tasks': users_at_5_tasks,
+                'conversion_rate': conversion_rate,
+                'monthly_revenue_potential': monthly_revenue_potential,
+                'breakdown': {
+                    'premium_clients': premium_clients,
+                    'premium_workers': premium_workers,
+                    'free_clients': free_clients,
+                    'free_workers': free_workers
+                }
+            }
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAdminUser])
+def platform_activity(request):
+    """
+    ✅ 4. نشاط المنصة
+    GET /api/admin/analytics/activity/
+    """
+    from .serializers import PlatformActivitySerializer
+    
+    now = timezone.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today_start - timedelta(days=now.weekday())
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    
+    # المهام المنشورة
+    tasks_today = ServiceRequest.objects.filter(created_at__gte=today_start).count()
+    tasks_week = ServiceRequest.objects.filter(created_at__gte=week_start).count()
+    tasks_month = ServiceRequest.objects.filter(created_at__gte=month_start).count()
+    
+    # المهام المقبولة (active)
+    accepted_today = ServiceRequest.objects.filter(
+        status='active',
+        updated_at__gte=today_start
+    ).count()
+    accepted_week = ServiceRequest.objects.filter(
+        status='active',
+        updated_at__gte=week_start
+    ).count()
+    accepted_month = ServiceRequest.objects.filter(
+        status='active',
+        updated_at__gte=month_start
+    ).count()
+    
+    # معدل القبول
+    acceptance_rate = 0
+    if tasks_month > 0:
+        acceptance_rate = (accepted_month / tasks_month) * 100
+    
+    # المهام الملغاة
+    cancelled_today = ServiceRequest.objects.filter(
+        status='cancelled',
+        updated_at__gte=today_start
+    ).count()
+    cancelled_week = ServiceRequest.objects.filter(
+        status='cancelled',
+        updated_at__gte=week_start
+    ).count()
+    cancelled_month = ServiceRequest.objects.filter(
+        status='cancelled',
+        updated_at__gte=month_start
+    ).count()
+    
+    # معدل الإلغاء
+    cancellation_rate = 0
+    if tasks_month > 0:
+        cancellation_rate = (cancelled_month / tasks_month) * 100
+    
+    # العمال النشطين
+    workers_online = User.objects.filter(
+        role='worker',
+        worker_profile__is_online=True
+    ).count()
+    
+    workers_with_location = User.objects.filter(
+        role='worker',
+        worker_profile__location_sharing_enabled=True,
+        worker_profile__current_latitude__isnull=False,
+        worker_profile__current_longitude__isnull=False
+    ).count()
+    
+    data = {
+        'tasks_published_today': tasks_today,
+        'tasks_published_this_week': tasks_week,
+        'tasks_published_this_month': tasks_month,
+        'tasks_accepted_today': accepted_today,
+        'tasks_accepted_this_week': accepted_week,
+        'tasks_accepted_this_month': accepted_month,
+        'acceptance_rate': round(acceptance_rate, 2),
+        'tasks_cancelled_today': cancelled_today,
+        'tasks_cancelled_this_week': cancelled_week,
+        'tasks_cancelled_this_month': cancelled_month,
+        'cancellation_rate': round(cancellation_rate, 2),
+        'workers_online_now': workers_online,
+        'workers_with_active_location': workers_with_location
+    }
+    
+    serializer = PlatformActivitySerializer(data)
+    
+    return Response({
+        'success': True,
+        'data': serializer.data
+    })
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAdminUser])
+def top_service_categories(request):
+    """
+    أكثر فئات الخدمات طلباً
+    GET /api/admin/analytics/top-categories/?limit=10
+    """
+    if not request.user.is_staff and not request.user.role == 'admin':
+        return Response({
+            'success': False,
+            'error': 'Unauthorized - Admin access only'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        limit = int(request.GET.get('limit', 10))
+        
+        categories = ServiceCategory.objects.all()
+        
+        categories_data = []
+        now = timezone.now()
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        
+        for category in categories:
+            # ✅ إجمالي المهام
+            total_tasks = ServiceRequest.objects.filter(
+                service_category=category
+            ).count()
+            
+            # ✅ المهام هذا الشهر
+            tasks_this_month = ServiceRequest.objects.filter(
+                service_category=category,
+                created_at__gte=month_start
+            ).count()
+            
+            # ✅ عدد العمال من WorkerProfile (لأن WorkerService فارغ)
+            total_workers = User.objects.filter(
+                role='worker',
+                worker_profile__service_category=category.name
+            ).count()
+            
+            categories_data.append({
+                'category_id': category.id,
+                'category_name': category.name,  
+                'total_tasks': total_tasks,
+                'tasks_this_month': tasks_this_month,
+                'total_workers': total_workers
+            })
+        
+        # ✅ ترتيب حسب إجمالي المهام
+        categories_data.sort(key=lambda x: x['total_tasks'], reverse=True)
+        categories_data = categories_data[:limit]
+        
+        return Response({
+            'success': True,
+            'data': categories_data,
+            'count': len(categories_data),
+            'filters': {
+                'limit': limit
+            }
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        import traceback
+        print(f"Error in top_service_categories: {str(e)}")
+        print(traceback.format_exc())
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAdminUser])
+def most_active_users(request):
+    """
+    ✅ 6. المستخدمون الأكثر نشاطاً
+    GET /api/admin/analytics/most-active/
+    Query params:
+    - limit: عدد النتائج (default: 20)
+    - role: client/worker
+    """
+    from .serializers import MostActiveUserSerializer
+    
+    limit = int(request.query_params.get('limit', 20))
+    role_filter = request.query_params.get('role')
+    
+    data = []
+    
+    if not role_filter or role_filter == 'client':
+        # العملاء الأكثر نشاطاً
+        # ✅ استخدام service_requests بدلاً من posted_tasks
+        clients = User.objects.filter(role='client').annotate(
+            tasks_count=Count('service_requests'),  # ✅ الاسم الصحيح
+            accepted_count=Count('service_requests', filter=Q(service_requests__status='active'))
+        ).filter(tasks_count__gt=0).order_by('-tasks_count')[:limit]
+        
+        for client in clients:
+            data.append({
+                'user_id': client.id,
+                'user_name': client.get_full_name() or client.phone,
+                'phone': client.phone,
+                'role': 'client',
+                'tasks_published': client.tasks_count,
+                'tasks_accepted': client.accepted_count,
+                'applications_sent': None,
+                'tasks_completed': None,
+                'last_activity': client.last_login or client.date_joined,
+                'is_online': False
+            })
+    
+    if not role_filter or role_filter == 'worker':
+        # العمال الأكثر نشاطاً
+        workers = User.objects.filter(role='worker').annotate(
+            apps_count=Count('task_applications'),
+            completed_count=Count('assigned_tasks', filter=Q(assigned_tasks__status='completed'))
+        ).filter(apps_count__gt=0).order_by('-apps_count')[:limit]
+        
+        for worker in workers:
+            is_online = False
+            if hasattr(worker, 'worker_profile'):
+                is_online = worker.worker_profile.is_online
+            
+            data.append({
+                'user_id': worker.id,
+                'user_name': worker.get_full_name() or worker.phone,
+                'phone': worker.phone,
+                'role': 'worker',
+                'tasks_published': None,
+                'tasks_accepted': None,
+                'applications_sent': worker.apps_count,
+                'tasks_completed': worker.completed_count,
+                'last_activity': worker.last_login or worker.date_joined,
+                'is_online': is_online
+            })
+    
+    # ترتيب حسب النشاط
+    if role_filter == 'client':
+        data.sort(key=lambda x: x['tasks_published'], reverse=True)
+    elif role_filter == 'worker':
+        data.sort(key=lambda x: x['applications_sent'], reverse=True)
+    else:
+        # ترتيب مختلط
+        data.sort(key=lambda x: (
+            x['tasks_published'] or 0) + (x['applications_sent'] or 0
+        ), reverse=True)
+    
+    data = data[:limit]
+    
+    serializer = MostActiveUserSerializer(data, many=True)
+    
+    return Response({
+        'success': True,
+        'data': serializer.data,
+        'count': len(data),
+        'filters': {
+            'limit': limit,
+            'role': role_filter
+        }
+    })
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAdminUser])
+def cancellation_analytics(request):
+    """
+    ✅ 7. تحليل الإلغاءات
+    GET /api/admin/analytics/cancellations/
+    """
+    from .serializers import CancellationAnalyticsSerializer
+    
+    now = timezone.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today_start - timedelta(days=now.weekday())
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    
+    # إجمالي المهام
+    total_tasks = ServiceRequest.objects.count()
+    
+    # المهام الملغاة
+    cancelled_tasks = ServiceRequest.objects.filter(status='cancelled').count()
+    
+    # معدل الإلغاء
+    cancellation_rate = 0
+    if total_tasks > 0:
+        cancellation_rate = (cancelled_tasks / total_tasks) * 100
+    
+    # العملاء الأكثر إلغاءً
+    # ✅ استخدام service_requests بدلاً من posted_tasks
+    top_cancellers_query = User.objects.filter(role='client').annotate(
+        cancelled_count=Count('service_requests', filter=Q(service_requests__status='cancelled'))
+    ).filter(cancelled_count__gt=0).order_by('-cancelled_count')[:10]
+    
+    top_cancellers = []
+    for client in top_cancellers_query:
+        top_cancellers.append({
+            'user_id': client.id,
+            'user_name': client.get_full_name() or client.phone,
+            'phone': client.phone,
+            'cancelled_count': client.cancelled_count
+        })
+    
+    # الإلغاءات حسب الوقت
+    cancelled_today = ServiceRequest.objects.filter(
+        status='cancelled',
+        updated_at__gte=today_start
+    ).count()
+    
+    cancelled_week = ServiceRequest.objects.filter(
+        status='cancelled',
+        updated_at__gte=week_start
+    ).count()
+    
+    cancelled_month = ServiceRequest.objects.filter(
+        status='cancelled',
+        updated_at__gte=month_start
+    ).count()
+    
+    data = {
+        'total_tasks': total_tasks,
+        'cancelled_tasks': cancelled_tasks,
+        'cancellation_rate': round(cancellation_rate, 2),
+        'top_cancellers': top_cancellers,
+        'cancelled_today': cancelled_today,
+        'cancelled_this_week': cancelled_week,
+        'cancelled_this_month': cancelled_month
+    }
+    
+    serializer = CancellationAnalyticsSerializer(data)
+    
+    return Response({
+        'success': True,
+        'data': serializer.data
+    })
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, IsAdminUser])
+def user_growth_chart(request):
+    """
+    Get monthly user growth from September 2025 to current month
+    Returns count of new users registered each month
+    """
+    try:
+        from django.db.models import Count
+        from django.db.models.functions import TruncMonth
+        from datetime import datetime
+        
+        # Get users grouped by month from September 2025
+        users_by_month = User.objects.filter(
+            created_at__gte=datetime(2025, 9, 1)  # من سبتمبر 2025
+        ).annotate(
+            month=TruncMonth('created_at')
+        ).values('month').annotate(
+            count=Count('id')
+        ).order_by('month')
+        
+        # Format data for frontend
+        months_fr = {
+            1: 'Jan', 2: 'Fév', 3: 'Mar', 4: 'Avr', 
+            5: 'Mai', 6: 'Juin', 7: 'Juil', 8: 'Août',
+            9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Déc'
+        }
+        
+        growth_data = []
+        cumulative = 0
+        
+        for entry in users_by_month:
+            month_num = entry['month'].month
+            cumulative += entry['count']
+            growth_data.append({
+                'month': months_fr[month_num],
+                'new_users': entry['count'],
+                'total_users': cumulative,
+                'date': entry['month'].strftime('%Y-%m')
+            })
+        
+        return Response({
+            'success': True,
+            'data': growth_data
+        })
+        
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+    
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, IsAdminUser])
+def get_all_tasks(request):
+    """
+    Get all tasks with optional filters
+    """
+    try:
+        from tasks.models import ServiceRequest
+        from django.db.models import Q
+        
+        # ✅ صحيح
+        tasks = ServiceRequest.objects.select_related(
+            'client', 'service_category', 'assigned_worker'
+        ).all()
+        
+        # Apply filters
+        status = request.GET.get('status')
+        category = request.GET.get('category')
+        search = request.GET.get('search')
+        
+        if status:
+            tasks = tasks.filter(status=status)
+        
+        if category:
+            tasks = tasks.filter(service_category_id=category)
+        
+        if search:
+            tasks = tasks.filter(
+                Q(title__icontains=search) | 
+                Q(description__icontains=search)
+            )
+        
+        tasks_data = []
+        for task in tasks.order_by('-created_at'):
+            # Handle applications count safely
+            try:
+                applications_count = task.applications.count()
+            except:
+                applications_count = 0
+            
+            tasks_data.append({
+                'id': task.id,
+                'title': task.title,
+                'description': task.description,
+                'status': task.status,
+                'budget': task.budget,
+                'location': task.location,
+                'client_name': task.client.get_full_name() if task.client else 'N/A',
+                'client_phone': task.client.phone if task.client else 'N/A',
+                'category_name': task.service_category.name if task.service_category else None,
+                'category_icon': task.service_category.icon if task.service_category else None,
+                'created_at': task.created_at.isoformat(),
+                'applications_count': applications_count,
+                'accepted_worker_name': task.assigned_worker.get_full_name() if task.assigned_worker else None,
+            })
+        
+        return Response({
+            'success': True,
+            'data': tasks_data,
+            'total': len(tasks_data)
+        })
+        
+    except Exception as e:
+        import traceback
+        print("Error in get_all_tasks:", str(e))
+        print(traceback.format_exc())
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, IsAdminUser])
+def get_tasks_stats(request):
+    """
+    Get task statistics
+    """
+    try:
+        from tasks.models import ServiceRequest
+        
+        total_tasks = ServiceRequest.objects.count()
+        published_tasks = ServiceRequest.objects.filter(status='published').count()
+        active_tasks = ServiceRequest.objects.filter(status='active').count()
+        cancelled_tasks = ServiceRequest.objects.filter(status='cancelled').count()
+        
+        return Response({
+            'success': True,
+            'data': {
+                'total_tasks': total_tasks,
+                'published_tasks': published_tasks,
+                'active_tasks': active_tasks,
+                'cancelled_tasks': cancelled_tasks
+            }
+        })
+        
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+    
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, IsAdminUser])
+def get_all_categories(request):
+    """
+    Get all service categories
+    """
+    try:
+        from services.models import ServiceCategory  # ← غيري من tasks إلى services
+        
+        categories = ServiceCategory.objects.all().order_by('name')
+        
+        categories_data = []
+        for cat in categories:
+            categories_data.append({
+                'id': cat.id,
+                'name': cat.name,
+                'icon': cat.icon,
+                'description': cat.description
+            })
+        
+        return Response({
+            'success': True,
+            'data': categories_data
+        })
+        
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+    
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, IsAdminUser])
+def users_at_limit(request):
+    """
+    Get users close to or at the free task limit (4 or 5+ tasks)
+    GET /api/admin/users/at-limit/
+    """
+    try:
+        from payments.models import UserTaskCounter
+        
+        # ✅ جلب المستخدمين عند 4 مهام أو 5+ مهام
+        users = UserTaskCounter.objects.filter(
+            accepted_tasks_count__gte=4,  # 4 أو أكثر
+            is_premium=False  # فقط المستخدمين المجانيين
+        ).select_related('user').order_by('-accepted_tasks_count')
+        
+        users_data = []
+        for counter in users:
+            user = counter.user
+            users_data.append({
+                'user_id': user.id,
+                'user_name': user.get_full_name() or user.phone,
+                'phone': user.phone,
+                'role': user.role,
+                'tasks_count': counter.accepted_tasks_count,
+                'is_premium': counter.is_premium,
+                'date_joined': user.date_joined.isoformat()
+            })
+        
+        return Response({
+            'success': True,
+            'data': users_data,
+            'count': len(users_data)
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+# admin_api/views.py
+@api_view(['GET'])
+@permission_classes([permissions.IsAdminUser])
+def daily_tasks_chart(request):
+    """
+    عدد المهام المنشورة يومياً آخر 7 أيام
+    """
+    from datetime import timedelta
+    
+    today = timezone.now().date()
+    data = []
+    days_fr = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim']
+    
+    for i in range(6, -1, -1):  
+        day = today - timedelta(days=i)
+        count = ServiceRequest.objects.filter(
+            created_at__date=day
+        ).count()
+        
+        data.append({
+            'day': days_fr[day.weekday()],
+            'tasks': count,
+            'date': day.isoformat()
+        })
+    
+    return Response({'success': True, 'data': data})
+

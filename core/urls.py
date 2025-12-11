@@ -19,6 +19,8 @@ urlpatterns = [
     path('api/notifications/', include('notifications.urls')), # الإشعارات
     path('api/payments/', include('payments.urls')),
     path('api/admin/', include('admin_api.urls')), 
+    path('api/complaints/', include('complaints.urls')),
+
 
 ]
 

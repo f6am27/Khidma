@@ -199,6 +199,16 @@ class AvailableTasksListView(generics.ListAPIView):
         sort_by = request.query_params.get('sort_by', 'latest')
         limit = request.query_params.get('limit')
         
+        # ✅ إذا لم يرسل الفرونت الموقع، جرب جلبه من آخر موقع محفوظ
+        if not worker_lat or not worker_lng:
+            try:
+                worker_profile = request.user.worker_profile
+                if worker_profile.current_latitude and worker_profile.current_longitude:
+                    worker_lat = float(worker_profile.current_latitude)
+                    worker_lng = float(worker_profile.current_longitude)
+            except:
+                pass
+        
         if worker_lat and worker_lng:
             try:
                 worker_lat = float(worker_lat)
@@ -211,8 +221,9 @@ class AvailableTasksListView(generics.ListAPIView):
                             worker_lat, worker_lng,
                             float(task.latitude), float(task.longitude)
                         )
-                        task.calculated_distance = distance  # ✅ فقط للمهام التي لها إحداثيات
-                    # ✅ لا نضيف calculated_distance للمهام بدون إحداثيات
+                        task.calculated_distance = distance
+                    else:
+                        task.calculated_distance = None  # ✅ للمهام بدون موقع
                     
                     tasks_with_distance.append(task)
                 
@@ -241,6 +252,7 @@ class AvailableTasksListView(generics.ListAPIView):
             except (ValueError, TypeError) as e:
                 return Response({'error': f'Invalid coordinates: {str(e)}'}, status=400)
         
+        # ✅ إذا لم يكن هناك موقع نهائياً، عرض حسب التاريخ
         if sort_by == 'budget_high':
             queryset = queryset.order_by('-budget')
         elif sort_by == 'budget_low':
@@ -258,7 +270,7 @@ class AvailableTasksListView(generics.ListAPIView):
             'count': queryset.count() if hasattr(queryset, 'count') else len(queryset),
             'results': serializer.data
         })
-    
+        
     @staticmethod
     def _calculate_distance(lat1, lng1, lat2, lng2):
         lat1, lng1, lat2, lng2 = map(radians, [lat1, lng1, lat2, lng2])

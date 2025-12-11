@@ -8,13 +8,10 @@ from services.models import ServiceCategory, NouakchottArea
 from django.db.models import Count, Sum, Avg, Q
 from django.utils import timezone
 from datetime import timedelta
-
-
+from complaints.models import Complaint
 
 # ==================== Dashboard Statistics ====================
-class DashboardStatsSerializer(serializers.Serializer):
-    """إحصائيات Dashboard الرئيسية"""
-    
+class DashboardStatsSerializer(serializers.Serializer):    
     # Users Stats
     total_users = serializers.IntegerField()
     total_clients = serializers.IntegerField()
@@ -35,6 +32,12 @@ class DashboardStatsSerializer(serializers.Serializer):
     # Reports Stats
     pending_reports = serializers.IntegerField()
     resolved_reports = serializers.IntegerField()
+
+    # ✅✅✅ Complaints Stats - فقط التعريفات ✅✅✅
+    total_complaints = serializers.IntegerField()
+    new_complaints = serializers.IntegerField()
+    pending_complaints = serializers.IntegerField()
+    # ✅✅✅ نهاية ✅✅✅
     
     # Growth Stats
     user_growth_rate = serializers.FloatField()
@@ -45,6 +48,7 @@ class DashboardStatsSerializer(serializers.Serializer):
 class AdminUserListSerializer(serializers.ModelSerializer):
     """قائمة المستخدمين للأدمن"""
     full_name = serializers.SerializerMethodField()
+    profile_image_url = serializers.SerializerMethodField() 
     status = serializers.SerializerMethodField()
     total_tasks = serializers.SerializerMethodField()
     suspension_info = serializers.SerializerMethodField()
@@ -55,11 +59,29 @@ class AdminUserListSerializer(serializers.ModelSerializer):
             'id', 'phone', 'email', 'first_name', 'last_name', 'full_name',
             'role', 'is_verified', 'is_active', 'is_suspended',
             'onboarding_completed', 'status', 'total_tasks',
-            'suspension_info', 'date_joined', 'last_login'
+            'suspension_info', 'date_joined', 'last_login','profile_image_url'
         ]
     
     def get_full_name(self, obj):
         return obj.get_full_name() or obj.phone or obj.email
+    
+    def get_profile_image_url(self, obj):
+        """جلب صورة البروفايل"""
+        try:
+            if obj.role == 'client' and hasattr(obj, 'client_profile'):
+                profile = obj.client_profile
+            elif obj.role == 'worker' and hasattr(obj, 'worker_profile'):
+                profile = obj.worker_profile
+            else:
+                return None
+            
+            if profile and profile.profile_image:
+                request = self.context.get('request')
+                if request:
+                    return request.build_absolute_uri(profile.profile_image.url)
+        except:
+            pass
+        return None
     
     def get_status(self, obj):
         if obj.is_suspended:
@@ -104,71 +126,90 @@ class AdminUserDetailSerializer(serializers.ModelSerializer):
         return obj.get_full_name() or obj.phone or obj.email
     
     def get_profile_details(self, obj):
-
-        def get_profile_image_url(profile):
-            if profile and profile.profile_image:
-                request = self.context.get('request')
-                if request:
-                    return request.build_absolute_uri(profile.profile_image.url)
-                return profile.profile_image.url
-            return None
-    
-
-        if obj.role == 'client' and hasattr(obj, 'client_profile'):
-            profile = obj.client_profile
-            
-            # ✅ حساب البيانات مباشرة من قاعدة البيانات
-            from tasks.models import ServiceRequest
-            from django.db.models import Sum
-            
-            # عدد المهام المنشورة
-            total_tasks_published = ServiceRequest.objects.filter(client=obj).count()
-            
-            # عدد المهام المكتملة
-            total_tasks_completed = ServiceRequest.objects.filter(
-                client=obj,
-                status='completed'
-            ).count()
-            
-            # المبلغ الكلي المنفق
-            total_amount_spent = ServiceRequest.objects.filter(
-                client=obj,
-                status='completed'
-            ).aggregate(total=Sum('final_price'))['total'] or 0
-            
-            return {
-                'gender': profile.gender,
-                'address': profile.address,
-                'total_tasks_published': total_tasks_published,  
-                'total_tasks_completed': total_tasks_completed,  
-                'total_amount_spent': str(total_amount_spent),
-                'profile_image_url': get_profile_image_url(profile)  # ✅ إضافة الصورة
- 
-            }
+        """معلومات Profile حسب النوع"""
+        if obj.role == 'client':
+            try:
+                profile = obj.client_profile
+                
+                # ✅ حساب المهام من ServiceRequest مباشرة
+                published_tasks = ServiceRequest.objects.filter(
+                    client=obj, 
+                    status='published'
+                ).count()
+                
+                active_tasks = ServiceRequest.objects.filter(
+                    client=obj, 
+                    status='active'
+                ).count()
+                
+                cancelled_tasks = ServiceRequest.objects.filter(
+                    client=obj, 
+                    status='cancelled'
+                ).count()
+                
+                # ✅ عرض الصورة
+                profile_image_url = None
+                if profile.profile_image:
+                    request = self.context.get('request')
+                    if request:
+                        profile_image_url = request.build_absolute_uri(profile.profile_image.url)
+                
+                return {
+                    'gender': profile.gender,
+                    'address': profile.address,
+                    'published_tasks_count': published_tasks,
+                    'active_tasks_count': active_tasks,
+                    'cancelled_tasks_count': cancelled_tasks,
+                    'profile_image_url': profile_image_url,
+                }
+            except:
+                return {
+                    'published_tasks_count': 0,
+                    'active_tasks_count': 0,
+                    'cancelled_tasks_count': 0,
+                }
         
-        elif obj.role == 'worker' and hasattr(obj, 'worker_profile'):
-            profile = obj.worker_profile
-            return {
-                # معلومات الخدمة
-                'service_category': profile.service_category,
-                'service_area': profile.service_area,
-                'base_price': str(profile.base_price),
-                'average_rating': float(profile.average_rating),
-                'total_jobs_completed': profile.total_jobs_completed,
-                'total_reviews': profile.total_reviews,
+        elif obj.role == 'worker':
+            try:
+                profile = obj.worker_profile
                 
-                # حالة الاتصال
-                'is_online': profile.is_online,
+                # ✅ عدد المهام المقبولة من UserTaskCounter
+                try:
+                    from payments.models import UserTaskCounter
+                    counter = UserTaskCounter.objects.get(user=obj)
+                    accepted_tasks = counter.accepted_tasks_count
+                except:
+                    accepted_tasks = 0
                 
-                # معلومات الموقع
-                'location_sharing_enabled': profile.location_sharing_enabled,
-                'current_latitude': str(profile.current_latitude) if profile.current_latitude else None,
-                'current_longitude': str(profile.current_longitude) if profile.current_longitude else None,
-                'location_accuracy': float(profile.location_accuracy) if profile.location_accuracy else None,
-                'location_last_updated': profile.location_last_updated.isoformat() if profile.location_last_updated else None,
-                'location_status': profile.location_status,
-                'profile_image_url': get_profile_image_url(profile) 
-            }
+                # ✅ عرض الصورة
+                profile_image_url = None
+                if profile.profile_image:
+                    request = self.context.get('request')
+                    if request:
+                        profile_image_url = request.build_absolute_uri(profile.profile_image.url)
+                
+                return {
+                    'service_category': profile.service_category,
+                    'service_area': profile.service_area,
+                    'average_rating': float(profile.average_rating or 0),
+                    'total_reviews': profile.total_reviews,
+                    'accepted_tasks_count': accepted_tasks,  # ✅ الاسم الجديد
+                    'is_online': profile.is_online,
+                    'location_sharing_enabled': profile.location_sharing_enabled,
+                    'location_status': profile.location_status,
+                    'current_latitude': str(profile.current_latitude) if profile.current_latitude else None,
+                    'current_longitude': str(profile.current_longitude) if profile.current_longitude else None,
+                    'location_accuracy': profile.location_accuracy,
+                    'location_last_updated': profile.location_last_updated,
+                    'profile_image_url': profile_image_url,
+                }
+            except Exception as e:
+                print(f"❌ Error loading worker profile: {e}")
+                return {
+                    'accepted_tasks_count': 0,
+                    'average_rating': 0,
+                    'total_reviews': 0,
+                }
         
         return None
 
@@ -475,3 +516,111 @@ class AdminPasswordResetConfirmSerializer(serializers.Serializer):
                 "new_password_confirm": "Les mots de passe ne correspondent pas"
             })
         return attrs
+    
+# ✅ 1. Top Rated Users
+class TopRatedUserSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    user_name = serializers.CharField()
+    phone = serializers.CharField()
+    role = serializers.CharField()
+    average_rating = serializers.FloatField()
+    total_reviews = serializers.IntegerField()
+    total_jobs_completed = serializers.IntegerField()
+    date_joined = serializers.DateTimeField()
+    profile_image_url = serializers.CharField(allow_null=True)
+
+# ✅ 2. Most Reported Users
+class MostReportedUserSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    user_name = serializers.CharField()
+    phone = serializers.CharField()
+    role = serializers.CharField()
+    total_reports = serializers.IntegerField()
+    pending_reports = serializers.IntegerField()
+    resolved_reports = serializers.IntegerField()
+    dismissed_reports = serializers.IntegerField()
+    last_report_date = serializers.DateTimeField(allow_null=True)
+    is_suspended = serializers.BooleanField()
+    suspension_reason = serializers.CharField(allow_null=True)
+
+# ✅ 3. Subscription Analytics
+class SubscriptionAnalyticsSerializer(serializers.Serializer):
+    total_users = serializers.IntegerField()
+    premium_users = serializers.IntegerField()
+    free_users = serializers.IntegerField()
+    users_at_4_tasks = serializers.IntegerField()  # Warning zone
+    users_at_5_tasks = serializers.IntegerField()  # Limit reached
+    conversion_rate = serializers.FloatField()
+    monthly_revenue_potential = serializers.DecimalField(max_digits=10, decimal_places=2)
+    
+    # Breakdown by role
+    premium_clients = serializers.IntegerField()
+    premium_workers = serializers.IntegerField()
+    free_clients = serializers.IntegerField()
+    free_workers = serializers.IntegerField()
+
+# ✅ 4. Platform Activity
+class PlatformActivitySerializer(serializers.Serializer):
+    # Task stats
+    tasks_published_today = serializers.IntegerField()
+    tasks_published_this_week = serializers.IntegerField()
+    tasks_published_this_month = serializers.IntegerField()
+    
+    # Acceptance stats
+    tasks_accepted_today = serializers.IntegerField()
+    tasks_accepted_this_week = serializers.IntegerField()
+    tasks_accepted_this_month = serializers.IntegerField()
+    acceptance_rate = serializers.FloatField()
+    
+    # Cancellation stats
+    tasks_cancelled_today = serializers.IntegerField()
+    tasks_cancelled_this_week = serializers.IntegerField()
+    tasks_cancelled_this_month = serializers.IntegerField()
+    cancellation_rate = serializers.FloatField()
+    
+    # Active workers
+    workers_online_now = serializers.IntegerField()
+    workers_with_active_location = serializers.IntegerField()
+
+# ✅ 5. Top Service Categories
+class TopServiceCategorySerializer(serializers.Serializer):
+    category_id = serializers.IntegerField()
+    category_name = serializers.CharField()
+    category_icon = serializers.CharField()
+    total_tasks = serializers.IntegerField()
+    total_workers = serializers.IntegerField()
+    average_budget = serializers.DecimalField(max_digits=10, decimal_places=2)
+    tasks_this_month = serializers.IntegerField()
+
+# ✅ 6. Most Active Users
+class MostActiveUserSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    user_name = serializers.CharField()
+    phone = serializers.CharField()
+    role = serializers.CharField()
+    
+    # For clients
+    tasks_published = serializers.IntegerField(allow_null=True)
+    tasks_accepted = serializers.IntegerField(allow_null=True)
+    
+    # For workers
+    applications_sent = serializers.IntegerField(allow_null=True)
+    tasks_completed = serializers.IntegerField(allow_null=True)
+    
+    last_activity = serializers.DateTimeField()
+    is_online = serializers.BooleanField()
+
+# ✅ 7. Cancellation Analytics
+class CancellationAnalyticsSerializer(serializers.Serializer):
+    total_tasks = serializers.IntegerField()
+    cancelled_tasks = serializers.IntegerField()
+    cancellation_rate = serializers.FloatField()
+    
+    # Top cancellers (clients)
+    top_cancellers = serializers.ListField()
+    
+    # Cancellation trends
+    cancelled_today = serializers.IntegerField()
+    cancelled_this_week = serializers.IntegerField()
+    cancelled_this_month = serializers.IntegerField()
+

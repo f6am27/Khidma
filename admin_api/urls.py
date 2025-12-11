@@ -2,11 +2,13 @@
 from django.urls import path
 from . import views
 from rest_framework_simplejwt.views import TokenRefreshView
-from .upload_views import (  # ✅ أضف هذا السطر
+from complaints import views as complaint_views
+from .upload_views import ( 
     upload_admin_profile_image,
     delete_admin_profile_image,
     get_admin_profile_image
 )
+
 app_name = 'admin_api'
 
 urlpatterns = [
@@ -59,6 +61,26 @@ urlpatterns = [
     path('notifications/<int:notification_id>/read/', views.admin_mark_notification_read, name='admin-mark-notification-read'),
     path('notifications/mark-all-read/', views.admin_mark_all_read, name='admin-mark-all-read'),
     path('notification-settings/', views.AdminNotificationSettingsView.as_view(), name='notification-settings'),
+  
+   # ✅ Analytics & Statistics
+    path('analytics/top-rated/', views.top_rated_users, name='analytics-top-rated'),
+    path('analytics/most-reported/', views.most_reported_users, name='analytics-most-reported'),
+    path('analytics/subscriptions/', views.subscription_analytics, name='analytics-subscriptions'),
+    path('analytics/activity/', views.platform_activity, name='analytics-activity'),
+    path('analytics/top-categories/', views.top_service_categories, name='analytics-top-categories'),
+    path('analytics/most-active/', views.most_active_users, name='analytics-most-active'),
+    path('analytics/cancellations/', views.cancellation_analytics, name='analytics-cancellations'),
+    path('analytics/user-growth/', views.user_growth_chart, name='user_growth_chart'),
+    path('tasks/', views.get_all_tasks, name='get_all_tasks'),
+    path('tasks/stats/', views.get_tasks_stats, name='get_tasks_stats'),
+    path('categories/', views.get_all_categories, name='get_all_categories'),
+    path('users/at-limit/', views.users_at_limit, name='users_at_limit'),
+    path('analytics/daily-tasks/', views.daily_tasks_chart),
 
-
+   # ✅ Complaints Management 
+    path('complaints/', complaint_views.AdminComplaintListView.as_view(), name='admin-complaints-list'),
+    path('complaints/stats/', complaint_views.admin_complaints_stats, name='admin-complaints-stats'),
+    path('complaints/bulk-update/', complaint_views.admin_bulk_update_status, name='admin-complaints-bulk-update'),
+    path('complaints/<int:id>/', complaint_views.AdminComplaintDetailView.as_view(), name='admin-complaint-detail'),
+    path('complaints/<int:complaint_id>/delete/', complaint_views.admin_delete_complaint, name='admin-complaint-delete'),
 ]
