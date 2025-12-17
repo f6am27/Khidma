@@ -11,7 +11,11 @@ from datetime import timedelta
 from complaints.models import Complaint
 
 # ==================== Dashboard Statistics ====================
-class DashboardStatsSerializer(serializers.Serializer):    
+# admin_api/serializers.py
+
+class DashboardStatsSerializer(serializers.Serializer):
+    """Serializer لإحصائيات Dashboard - محدّث للنظام الجديد"""
+    
     # Users Stats
     total_users = serializers.IntegerField()
     total_clients = serializers.IntegerField()
@@ -24,26 +28,23 @@ class DashboardStatsSerializer(serializers.Serializer):
     completed_tasks = serializers.IntegerField()
     cancelled_tasks = serializers.IntegerField()
     
-    # Financial Stats
-    total_revenue = serializers.DecimalField(max_digits=10, decimal_places=2)
-    revenue_this_month = serializers.DecimalField(max_digits=10, decimal_places=2)
-    average_task_value = serializers.DecimalField(max_digits=10, decimal_places=2)
+    # ✅ Subscription Stats (النظام الجديد)
+    premium_users = serializers.IntegerField(required=False, default=0)
+    total_bundles_sold = serializers.IntegerField(required=False, default=0)
+    active_bundles = serializers.IntegerField(required=False, default=0)
+    total_revenue = serializers.IntegerField(required=False, default=0)
+    revenue_this_month = serializers.IntegerField(required=False, default=0)
     
     # Reports Stats
     pending_reports = serializers.IntegerField()
     resolved_reports = serializers.IntegerField()
-
-    # ✅✅✅ Complaints Stats - فقط التعريفات ✅✅✅
     total_complaints = serializers.IntegerField()
     new_complaints = serializers.IntegerField()
     pending_complaints = serializers.IntegerField()
-    # ✅✅✅ نهاية ✅✅✅
     
-    # Growth Stats
+    # Growth Rates
     user_growth_rate = serializers.FloatField()
     task_completion_rate = serializers.FloatField()
-
-
 # ==================== User Management ====================
 class AdminUserListSerializer(serializers.ModelSerializer):
     """قائمة المستخدمين للأدمن"""

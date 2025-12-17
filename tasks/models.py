@@ -92,7 +92,7 @@ class ServiceRequest(models.Model):
     # Additional info
     is_urgent = models.BooleanField(default=False)
     requires_materials = models.BooleanField(default=True)
-    
+     
     class Meta:
         ordering = ['-created_at']
         verbose_name = "Service Request"

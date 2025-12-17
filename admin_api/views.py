@@ -103,10 +103,14 @@ class AdminLoginView(APIView):
         })
 
 # ==================== Dashboard Statistics ====================
+# admin_api/views.py - Fixed dashboard_stats
+
 @api_view(['GET'])
 @permission_classes([permissions.IsAdminUser])
 def dashboard_stats(request):
-    """إحصائيات Dashboard الرئيسية"""
+    """إحصائيات Dashboard الرئيسية - محدّثة للنظام الجديد"""
+    
+    from payments.models import UserTaskCounter, TaskBundle
     
     now = timezone.now()
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -127,10 +131,33 @@ def dashboard_stats(request):
     completed_tasks = ServiceRequest.objects.filter(status='completed').count()
     cancelled_tasks = ServiceRequest.objects.filter(status='cancelled').count()
     
-    # ❌ Financial Stats - معطل مؤقتاً
-    total_revenue = 0
-    revenue_this_month = 0
-    average_task_value = 0
+    # ✅ Subscription Stats - النظام الجديد
+    # عدد المستخدمين الذين لديهم حزمة نشطة (Premium)
+    premium_users_count = TaskBundle.objects.filter(
+        is_active=True,
+        moosyl_payment_status='completed'
+    ).values('user').distinct().count()
+    
+    # عدد الحزم المباعة (مكتملة الدفع)
+    total_bundles_sold = TaskBundle.objects.filter(
+        moosyl_payment_status='completed'
+    ).count()
+    
+    # الحزم النشطة حالياً
+    active_bundles = TaskBundle.objects.filter(
+        is_active=True,
+        moosyl_payment_status='completed'
+    ).count()
+    
+    # إجمالي الإيرادات (عدد الحزم × 5 MRU)
+    total_revenue = total_bundles_sold * 5
+    
+    # الإيرادات هذا الشهر
+    bundles_this_month = TaskBundle.objects.filter(
+        moosyl_payment_status='completed',
+        purchased_at__gte=month_start
+    ).count()
+    revenue_this_month = bundles_this_month * 5
     
     # Reports Stats
     pending_reports = Report.objects.filter(status='pending').count()
@@ -157,29 +184,39 @@ def dashboard_stats(request):
         task_completion_rate = (completed_tasks / total_tasks) * 100
     
     data = {
+        # Users
         'total_users': total_users,
         'total_clients': total_clients,
         'total_workers': total_workers,
         'new_users_this_month': new_users_this_month,
+        
+        # Tasks
         'total_tasks': total_tasks,
         'active_tasks': active_tasks,
         'completed_tasks': completed_tasks,
         'cancelled_tasks': cancelled_tasks,
+        
+        # ✅ Subscriptions (النظام الجديد)
+        'premium_users': premium_users_count,
+        'total_bundles_sold': total_bundles_sold,
+        'active_bundles': active_bundles,
         'total_revenue': total_revenue,
         'revenue_this_month': revenue_this_month,
-        'average_task_value': average_task_value,
+        
+        # Reports
         'pending_reports': pending_reports,
         'resolved_reports': resolved_reports,
-        'user_growth_rate': round(user_growth_rate, 2),
-        'task_completion_rate': round(task_completion_rate, 2),
         'total_complaints': total_complaints,
         'new_complaints': new_complaints_count,
-        'pending_complaints': pending_complaints_count
+        'pending_complaints': pending_complaints_count,
+        
+        # Rates
+        'user_growth_rate': round(user_growth_rate, 2),
+        'task_completion_rate': round(task_completion_rate, 2),
     }
     
     serializer = DashboardStatsSerializer(data)
     return Response(serializer.data)
-
 
 # ==================== Users Management ====================
 class AdminUserListView(generics.ListAPIView):
@@ -968,11 +1005,13 @@ def most_reported_users(request):
     })
 
 
+# admin_api/views.py - Fixed Function
+
 @api_view(['GET'])
 @permission_classes([permissions.IsAdminUser])
 def subscription_analytics(request):
     """
-    إحصائيات الاشتراكات والمستخدمين Premium/Free
+    إحصائيات الاشتراكات - النظام الجديد (TaskBundle)
     GET /api/admin/analytics/subscriptions/
     """
     if not request.user.is_staff and not request.user.role == 'admin':
@@ -982,81 +1021,140 @@ def subscription_analytics(request):
         }, status=status.HTTP_403_FORBIDDEN)
     
     try:
-        from payments.models import UserTaskCounter
+        from payments.models import UserTaskCounter, TaskBundle
+        from django.db.models import Count, Sum
         
-        # ✅ إحصائيات المستخدمين
+        # ✅ 1. إجمالي المستخدمين
         total_users = User.objects.filter(role__in=['client', 'worker']).count()
         
-        # ✅ حساب Premium vs Free من UserTaskCounter
-        premium_users = UserTaskCounter.objects.filter(is_premium=True).count()
-        free_users = UserTaskCounter.objects.filter(is_premium=False).count()
+        # ✅ 2. عدد المستخدمين في الفترة المجانية (0-4 مهام مستخدمة)
+        free_users = UserTaskCounter.objects.filter(
+            free_tasks_used__lt=5  # لم يستنفدوا المجاني بعد
+        ).exclude(
+            # استبعاد من لديهم حزمة نشطة
+            user__task_bundles__is_active=True,
+            user__task_bundles__moosyl_payment_status='completed'
+        ).count()
         
-        # ✅ المستخدمين عند 4 مهام (على وشك الوصول للحد)
+        # ✅ 3. عدد المستخدمين الذين لديهم حزمة نشطة (Premium)
+        premium_users = TaskBundle.objects.filter(
+            is_active=True,
+            moosyl_payment_status='completed'
+        ).values('user').distinct().count()
+        
+        # ✅ 4. المستخدمين عند 4 مهام مجانية (على وشك النفاد)
         users_at_4_tasks = UserTaskCounter.objects.filter(
-            accepted_tasks_count=4,
-            is_premium=False
+            free_tasks_used=4
+        ).exclude(
+            user__task_bundles__is_active=True,
+            user__task_bundles__moosyl_payment_status='completed'
         ).count()
         
-        # ✅ المستخدمين عند 5 مهام (وصلوا للحد المجاني)
+        # ✅ 5. المستخدمين عند 5 مهام (استنفدوا المجاني)
         users_at_5_tasks = UserTaskCounter.objects.filter(
-            accepted_tasks_count__gte=5,
-            is_premium=False
+            free_tasks_used__gte=5
+        ).exclude(
+            user__task_bundles__is_active=True,
+            user__task_bundles__moosyl_payment_status='completed'
         ).count()
         
-        # ✅ معدل التحويل (Conversion Rate)
+        # ✅ 6. معدل التحويل (Conversion Rate)
         conversion_rate = 0.0
         if total_users > 0:
             conversion_rate = round((premium_users / total_users) * 100, 2)
         
-        # ✅ الإيرادات المحتملة شهرياً (8 MRU × عدد Premium)
-        monthly_revenue_potential = premium_users * 8
+        # ✅ 7. الإيرادات الفعلية (عدد الحزم المباعة × 5 MRU)
+        total_bundles_sold = TaskBundle.objects.filter(
+            moosyl_payment_status='completed'
+        ).count()
         
-        # ✅ تفصيل Premium vs Free حسب الدور
-        premium_clients = UserTaskCounter.objects.filter(
-            is_premium=True,
+        total_revenue = total_bundles_sold * 5
+        
+        # ✅ 8. الإيرادات الشهرية المحتملة (الحزم النشطة × 5 MRU)
+        active_bundles = TaskBundle.objects.filter(
+            is_active=True,
+            moosyl_payment_status='completed'
+        ).count()
+        
+        monthly_revenue_potential = active_bundles * 5
+        
+        # ✅ 9. تفصيل Premium vs Free حسب الدور
+        premium_clients = TaskBundle.objects.filter(
+            is_active=True,
+            moosyl_payment_status='completed',
             user__role='client'
-        ).count()
+        ).values('user').distinct().count()
         
-        premium_workers = UserTaskCounter.objects.filter(
-            is_premium=True,
+        premium_workers = TaskBundle.objects.filter(
+            is_active=True,
+            moosyl_payment_status='completed',
             user__role='worker'
+        ).values('user').distinct().count()
+        
+        total_clients = User.objects.filter(role='client').count()
+        total_workers = User.objects.filter(role='worker').count()
+        
+        free_clients = total_clients - premium_clients
+        free_workers = total_workers - premium_workers
+        
+        # ✅ 10. إحصائيات إضافية
+        # المستخدمين الذين اشتروا حزمة واحدة على الأقل
+        users_purchased_once = UserTaskCounter.objects.filter(
+            total_subscriptions__gte=1
         ).count()
         
-        free_clients = UserTaskCounter.objects.filter(
-            is_premium=False,
-            user__role='client'
+        # المستخدمين الذين اشتروا أكثر من حزمة
+        users_purchased_multiple = UserTaskCounter.objects.filter(
+            total_subscriptions__gte=2
         ).count()
         
-        free_workers = UserTaskCounter.objects.filter(
-            is_premium=False,
-            user__role='worker'
-        ).count()
+        # متوسط عدد الحزم لكل مستخدم
+        avg_bundles = UserTaskCounter.objects.aggregate(
+            avg=Avg('total_subscriptions')
+        )['avg'] or 0
         
         return Response({
             'success': True,
             'data': {
+                # إحصائيات أساسية
                 'total_users': total_users,
                 'premium_users': premium_users,
                 'free_users': free_users,
                 'users_at_4_tasks': users_at_4_tasks,
                 'users_at_5_tasks': users_at_5_tasks,
                 'conversion_rate': conversion_rate,
-                'monthly_revenue_potential': monthly_revenue_potential,
+                
+                # الإيرادات
+                'total_revenue': total_revenue,  # إجمالي الإيرادات
+                'monthly_revenue_potential': monthly_revenue_potential,  # الشهرية الحالية
+                'total_bundles_sold': total_bundles_sold,
+                'active_bundles': active_bundles,
+                
+                # التفصيل حسب الدور
                 'breakdown': {
                     'premium_clients': premium_clients,
                     'premium_workers': premium_workers,
                     'free_clients': free_clients,
                     'free_workers': free_workers
+                },
+                
+                # إحصائيات الشراء
+                'purchase_stats': {
+                    'users_purchased_once': users_purchased_once,
+                    'users_purchased_multiple': users_purchased_multiple,
+                    'avg_bundles_per_user': round(avg_bundles, 2)
                 }
             }
         }, status=status.HTTP_200_OK)
         
     except Exception as e:
+        import traceback
+        print(f"Error in subscription_analytics: {str(e)}")
+        print(traceback.format_exc())
         return Response({
             'success': False,
             'error': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
 @api_view(['GET'])
 @permission_classes([permissions.IsAdminUser])
@@ -1569,47 +1667,96 @@ def get_all_categories(request):
             'error': str(e)
         }, status=500)
     
+# admin_api/views.py - Fixed Function
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, IsAdminUser])
 def users_at_limit(request):
     """
-    Get users close to or at the free task limit (4 or 5+ tasks)
+    المستخدمين القريبين من الحد أو عند الحد - النظام الجديد
     GET /api/admin/users/at-limit/
+    
+    يعرض:
+    - المستخدمين عند 4 مهام مجانية (قريب من النفاد)
+    - المستخدمين عند 5 مهام (استنفدوا المجاني ولا حزمة)
     """
     try:
-        from payments.models import UserTaskCounter
+        from payments.models import UserTaskCounter, TaskBundle
         
-        # ✅ جلب المستخدمين عند 4 مهام أو 5+ مهام
-        users = UserTaskCounter.objects.filter(
-            accepted_tasks_count__gte=4,  # 4 أو أكثر
-            is_premium=False  # فقط المستخدمين المجانيين
-        ).select_related('user').order_by('-accepted_tasks_count')
+        # ✅ 1. جلب المستخدمين عند 4 مهام مجانية (على وشك النفاد)
+        users_at_4 = UserTaskCounter.objects.filter(
+            free_tasks_used=4
+        ).exclude(
+            # استبعاد من لديهم حزمة نشطة
+            user__task_bundles__is_active=True,
+            user__task_bundles__moosyl_payment_status='completed'
+        ).select_related('user')
         
+        # ✅ 2. جلب المستخدمين عند 5+ مهام (استنفدوا المجاني بدون حزمة)
+        users_at_5_plus = UserTaskCounter.objects.filter(
+            free_tasks_used__gte=5
+        ).exclude(
+            user__task_bundles__is_active=True,
+            user__task_bundles__moosyl_payment_status='completed'
+        ).select_related('user')
+        
+        # ✅ 3. دمج النتائج
         users_data = []
-        for counter in users:
+        
+        # إضافة المستخدمين عند 4 مهام
+        for counter in users_at_4:
             user = counter.user
             users_data.append({
                 'user_id': user.id,
                 'user_name': user.get_full_name() or user.phone,
                 'phone': user.phone,
                 'role': user.role,
-                'tasks_count': counter.accepted_tasks_count,
-                'is_premium': counter.is_premium,
+                'free_tasks_used': counter.free_tasks_used,
+                'tasks_count': counter.free_tasks_used,  # للتوافق مع React
+                'status': 'close_to_limit',
+                'status_message': '⚠️ 1 tâche restante',
+                'has_active_bundle': False,
                 'date_joined': user.date_joined.isoformat()
             })
+        
+        # إضافة المستخدمين عند 5+ مهام
+        for counter in users_at_5_plus:
+            user = counter.user
+            users_data.append({
+                'user_id': user.id,
+                'user_name': user.get_full_name() or user.phone,
+                'phone': user.phone,
+                'role': user.role,
+                'free_tasks_used': counter.free_tasks_used,
+                'tasks_count': counter.free_tasks_used,  # للتوافق مع React
+                'status': 'limit_reached',
+                'status_message': '🔴 Limite atteinte',
+                'has_active_bundle': False,
+                'date_joined': user.date_joined.isoformat()
+            })
+        
+        # ✅ 4. ترتيب حسب عدد المهام (تنازلياً)
+        users_data.sort(key=lambda x: x['free_tasks_used'], reverse=True)
         
         return Response({
             'success': True,
             'data': users_data,
-            'count': len(users_data)
+            'count': len(users_data),
+            'breakdown': {
+                'at_4_tasks': len([u for u in users_data if u['free_tasks_used'] == 4]),
+                'at_5_plus_tasks': len([u for u in users_data if u['free_tasks_used'] >= 5])
+            }
         }, status=status.HTTP_200_OK)
         
     except Exception as e:
+        import traceback
+        print(f"Error in users_at_limit: {str(e)}")
+        print(traceback.format_exc())
         return Response({
             'success': False,
             'error': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+    
 # admin_api/views.py
 @api_view(['GET'])
 @permission_classes([permissions.IsAdminUser])

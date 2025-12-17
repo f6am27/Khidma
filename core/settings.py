@@ -278,8 +278,6 @@ EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True') == 'True'
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', f'Khidma Admin <{EMAIL_HOST_USER}>')
-
-
 # ==========================================
 # MOOSYL PAYMENT GATEWAY SETTINGS
 # ==========================================
@@ -288,17 +286,21 @@ DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', f'Khidma Admin <{EMAIL_HOST
 MOOSYL_SECRET_KEY = os.environ.get('MOOSYL_SECRET_KEY', '')
 MOOSYL_PUBLISHABLE_KEY = os.environ.get('MOOSYL_PUBLISHABLE_KEY', '')
 
-# Moosyl API URL (Sandbox للاختبار)
+# Moosyl API URL
 MOOSYL_BASE_URL = 'https://api.moosyl.com'
 
-# Webhook URL
+# Webhook URL (سيتم تحديثه للـ Production)
 MOOSYL_WEBHOOK_URL = os.environ.get(
     'MOOSYL_WEBHOOK_URL', 
-    'http://localhost:8000/api/payments/moosyl/webhook/'
-)
+    'https://71fc0cd29ca1.ngrok-free.app/api/payments/moosyl/webhook/'
+    )
 
 # Timeout settings
 MOOSYL_TIMEOUT = 30  # seconds
 
 # Currency
 MOOSYL_CURRENCY = 'MRU'  # Ouguiya
+
+# Bundle Pricing (للوضوح)
+MOOSYL_BUNDLE_PRICE = 5.00  # MRU
+MOOSYL_BUNDLE_TASKS = 8  # عدد المهام في الحزمة

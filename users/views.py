@@ -11,6 +11,7 @@ from .models import User, WorkerProfile, ClientProfile,SavedLocation
 from .utils import to_e164
 from django.utils import timezone
 from rest_framework import generics 
+from rest_framework.permissions import IsAuthenticated
 from .serializers import (
     ChangePasswordSerializer, RegisterSerializer, VerifySerializer, LoginSerializer,
     PasswordResetStartSerializer, PasswordResetConfirmSerializer,
@@ -1005,3 +1006,42 @@ class SuspensionStatusView(APIView):
     def get(self, request):
         user = request.user
         return Response({"is_suspended": user.is_suspended}, status=200)
+    
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def set_user_language(request):
+    """
+    تغيير لغة المستخدم
+    POST /api/users/set-language/
+    Body: {"language": "ar"} or "fr" or "en"
+    """
+    language = request.data.get('language')
+    
+    if not language:
+        return Response({
+            'error': 'Language is required',
+            'error_ar': 'اللغة مطلوبة',
+            'error_fr': 'La langue est requise'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    valid_languages = ['ar', 'fr', 'en']
+    if language not in valid_languages:
+        return Response({
+            'error': f'Invalid language. Must be one of: {", ".join(valid_languages)}',
+            'error_ar': 'اللغة غير صالحة',
+            'error_fr': 'Langue invalide'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # حفظ اللغة
+    user = request.user
+    user.preferred_language = language
+    user.save(update_fields=['preferred_language'])
+    
+    return Response({
+        'success': True,
+        'message': 'Language updated successfully',
+        'message_ar': 'تم تحديث اللغة بنجاح',
+        'message_fr': 'Langue mise à jour avec succès',
+        'language': language
+    })

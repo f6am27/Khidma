@@ -51,4 +51,17 @@ urlpatterns = [
     
     # إشعار بتعطيل نظام الدفع القديم
     path('disabled/', views.payment_system_disabled, name='payment_system_disabled'),
+
+    # ================================
+    # 🚀 Moosyl Integration
+    # ================================
+    
+    # شراء حزمة جديدة
+    path('purchase-bundle/', views.purchase_bundle, name='purchase_bundle'),
+    
+    # Webhook من Moosyl
+    path('moosyl/webhook/', views.moosyl_webhook, name='moosyl_webhook'),
+    
+    # التحقق من حالة حزمة
+    path('bundle/<int:bundle_id>/status/', views.check_bundle_status, name='check_bundle_status'),
 ]

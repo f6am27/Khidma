@@ -9,6 +9,8 @@ urlpatterns = [
     path('my-tasks/', views.ClientTasksListView.as_view(), name='my-tasks'),
     path('<int:pk>/', views.ServiceRequestDetailView.as_view(), name='service-request-detail'),
     path('<int:pk>/update/', views.ServiceRequestUpdateView.as_view(), name='task-update'),
+    path('applications/stats/', views.get_worker_applications_stats, name='worker-applications-stats'),
+
     
     # Task candidates management
     path('<int:pk>/candidates/', views.TaskCandidatesListView.as_view(), name='task-candidates'),

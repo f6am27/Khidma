@@ -1,5 +1,6 @@
 # users/urls.py - الملف الكامل
 from django.urls import path
+from . import views
 from .views import (
     RegisterView, VerifyView, LoginView,
     PasswordResetStartView, PasswordResetConfirmView,
@@ -50,6 +51,8 @@ urlpatterns = [
 
     # ====== ملف المستخدم الأساسي ======
     path('profile/', UserProfileView.as_view(), name='user_profile'),
+    path('set-language/', views.set_user_language, name='set-language'),
+
 
     # ====== ملفات التفصيلية للمستخدمين ======
     path('worker-profile/', WorkerProfileView.as_view(), name='worker_profile'),
@@ -71,4 +74,5 @@ urlpatterns = [
     path('saved-locations/<int:pk>/delete/', SavedLocationDeleteView.as_view(), name='saved_location_delete'),
     path('suspend-account/', SuspendAccountView.as_view()),
     path('suspension-status/', SuspensionStatusView.as_view()),
+
 ]

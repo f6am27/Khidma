@@ -23,6 +23,18 @@ class User(AbstractUser):
         default='',
         help_text="البريد الإلكتروني - للأدمن إجباري، للآخرين اختياري"
     )
+     #   حقل اللغة
+    LANGUAGE_CHOICES = [
+        ('ar', 'العربية'),
+        ('fr', 'Français'),
+        ('en', 'English'),
+    ]
+    preferred_language = models.CharField(
+        max_length=2,
+        choices=LANGUAGE_CHOICES,
+        default='fr',
+        help_text="اللغة المفضلة للمستخدم"
+    )
     # الحقول الأساسية
     phone = models.CharField(
         max_length=20, 

@@ -6,29 +6,30 @@ Serializers لنظام الدفع والاشتراكات
 
 from rest_framework import serializers
 from .models import UserTaskCounter, PlatformSubscription
-
+from payments.models import TaskBundle  
 
 class UserTaskCounterSerializer(serializers.ModelSerializer):
     """
-    عرض معلومات عداد المهام للمستخدم
+    عرض معلومات عداد المهام للمستخدم - النظام الجديد
     """
     user_id = serializers.IntegerField(source='user.id', read_only=True)
     user_phone = serializers.CharField(source='user.phone', read_only=True)
     user_name = serializers.SerializerMethodField()
     
     # حقول محسوبة
-    tasks_remaining = serializers.IntegerField(
-        source='tasks_remaining_before_payment',
-        read_only=True
-    )
+    current_limit = serializers.IntegerField(read_only=True)
+    current_usage = serializers.IntegerField(read_only=True)
+    tasks_remaining = serializers.IntegerField(read_only=True)
     needs_subscription = serializers.BooleanField(
         source='needs_payment',
         read_only=True
     )
     
+    # الحزمة النشطة
+    active_bundle = serializers.SerializerMethodField()
+    
     # حالة العداد
     counter_status = serializers.SerializerMethodField()
-    subscription_status = serializers.SerializerMethodField()
     
     class Meta:
         model = UserTaskCounter
@@ -37,14 +38,14 @@ class UserTaskCounterSerializer(serializers.ModelSerializer):
             'user_id',
             'user_phone',
             'user_name',
-            'accepted_tasks_count',
+            'free_tasks_used',
+            'total_subscriptions',
+            'current_limit',
+            'current_usage',
             'tasks_remaining',
             'needs_subscription',
-            'is_premium',
-            'last_payment_date',
-            'last_reset_date',
+            'active_bundle',
             'counter_status',
-            'subscription_status',
             'created_at',
             'updated_at'
         ]
@@ -57,48 +58,48 @@ class UserTaskCounterSerializer(serializers.ModelSerializer):
             return f"{user.first_name} {user.last_name}"
         return user.username or user.phone
     
+    def get_active_bundle(self, obj):
+        """معلومات الحزمة النشطة"""
+        bundle = obj.get_active_bundle()
+        if bundle:
+            return {
+                'id': bundle.id,
+                'tasks_included': bundle.tasks_included,
+                'tasks_used': bundle.tasks_used,
+                'tasks_remaining': bundle.tasks_remaining,
+                'purchased_at': bundle.purchased_at,
+            }
+        return None
+    
     def get_counter_status(self, obj):
         """حالة العداد (نص وصفي)"""
-        FREE_LIMIT = 5
-        remaining = FREE_LIMIT - obj.accepted_tasks_count
+        active_bundle = obj.get_active_bundle()
         
-        if obj.is_premium:
+        if active_bundle:
+            remaining = active_bundle.tasks_remaining
             return {
-                'status': 'premium',
-                'message': 'مشترك - لا حدود',
-                'message_fr': 'Premium - Illimité'
+                'status': 'active_bundle',
+                'message': f'لديك {remaining} مهام متبقية في الحزمة',
+                'message_fr': f'Il vous reste {remaining} tâches dans le bundle',
+                'type': 'paid'
             }
         
-        if remaining > 0:
+        elif obj.free_tasks_used < 5:
+            remaining = 5 - obj.free_tasks_used
             return {
-                'status': 'active',
+                'status': 'free_period',
                 'message': f'متبقي {remaining} مهام مجانية',
-                'message_fr': f'{remaining} tâches gratuites restantes'
+                'message_fr': f'{remaining} tâches gratuites restantes',
+                'type': 'free'
             }
         
-        return {
-            'status': 'limit_reached',
-            'message': 'استنفدت الحد المجاني - اشتراك مطلوب',
-            'message_fr': 'Limite atteinte - Abonnement requis'
-        }
-    
-    def get_subscription_status(self, obj):
-        """حالة الاشتراك"""
-        if obj.is_premium:
+        else:
             return {
-                'is_active': True,
-                'type': 'premium',
-                'last_payment': obj.last_payment_date,
-                'message': 'نشط',
-                'message_fr': 'Actif'
+                'status': 'limit_reached',
+                'message': 'استنفدت الحد المجاني - يجب شراء حزمة',
+                'message_fr': 'Limite atteinte - Achat de bundle requis',
+                'type': 'needs_payment'
             }
-        
-        return {
-            'is_active': False,
-            'type': 'free',
-            'message': 'مجاني',
-            'message_fr': 'Gratuit'
-        }
 
 
 class UserTaskCounterSimpleSerializer(serializers.ModelSerializer):
@@ -237,3 +238,97 @@ class SubscriptionCreateSerializer(serializers.Serializer):
         )
         
         return subscription
+    
+# ================================
+# Serializers للنظام الجديد - TaskBundle
+# ================================
+
+class TaskBundleSerializer(serializers.ModelSerializer):
+    """
+    عرض معلومات حزمة المهام
+    """
+    user_phone = serializers.CharField(source='user.phone', read_only=True)
+    user_name = serializers.SerializerMethodField()
+    
+    # حقول محسوبة
+    is_exhausted = serializers.BooleanField(read_only=True)
+    tasks_remaining = serializers.IntegerField(read_only=True)
+    payment_status_display = serializers.CharField(
+        source='get_moosyl_payment_status_display',
+        read_only=True
+    )
+    
+    class Meta:
+        model = TaskBundle
+        fields = [
+            'id',
+            'user_phone',
+            'user_name',
+            'bundle_type',
+            'tasks_included',
+            'tasks_used',
+            'tasks_remaining',
+            'is_exhausted',
+            'payment_amount',
+            'payment_method',
+            'moosyl_transaction_id',
+            'moosyl_payment_status',
+            'payment_status_display',
+            'is_active',
+            'purchased_at',
+            'completed_at',
+        ]
+        read_only_fields = ['id', 'purchased_at', 'completed_at']
+    
+    def get_user_name(self, obj):
+        user = obj.user
+        if user.first_name and user.last_name:
+            return f"{user.first_name} {user.last_name}"
+        return user.username or user.phone
+
+
+class TaskBundleCreateSerializer(serializers.Serializer):
+    """
+    شراء حزمة جديدة عبر Moosyl
+    """
+    # سيتم استخدامه في API شراء الحزمة
+    # الحقول ستأتي من Moosyl بعد قراءة التوثيق
+    
+    def validate(self, data):
+        """التحقق من البيانات"""
+        user = self.context['request'].user
+        
+        # التحقق: هل يحتاج فعلاً للشراء؟
+        counter, _ = UserTaskCounter.objects.get_or_create(user=user)
+        if not counter.needs_payment:
+            raise serializers.ValidationError({
+                'error': 'لا تحتاج لشراء حزمة الآن',
+                'tasks_remaining': counter.tasks_remaining
+            })
+        
+        return data
+
+
+# ================================
+# Serializer لشراء حزمة عبر Moosyl
+# ================================
+
+class PurchaseBundleSerializer(serializers.Serializer):
+    """
+    بدء عملية شراء حزمة (8 مهام بـ 5 أوقيات)
+    """
+    # لا نحتاج حقول input - كل شيء تلقائي
+    
+    def validate(self, data):
+        """التحقق من أن المستخدم يحتاج فعلاً للشراء"""
+        user = self.context['request'].user
+        counter, _ = UserTaskCounter.objects.get_or_create(user=user)
+        
+        if not counter.needs_payment:
+            raise serializers.ValidationError({
+                'error': 'لا تحتاج لشراء حزمة الآن',
+                'tasks_remaining': counter.tasks_remaining,
+                'message_fr': 'Vous n\'avez pas besoin d\'acheter un bundle maintenant'
+            })
+        
+        return data

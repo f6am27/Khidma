@@ -9,6 +9,7 @@ from django.utils import timezone
 from django.shortcuts import get_object_or_404
 import random
 from math import radians, cos, sin, asin, sqrt
+from rest_framework.permissions import IsAuthenticated
 
 from .models import ServiceRequest, TaskApplication, TaskReview, TaskNotification
 from notifications.utils import notify_new_task_available, notify_task_published
@@ -329,20 +330,17 @@ class TaskApplicationCreateView(generics.CreateAPIView):
         
         worker_counter, _ = UserTaskCounter.objects.get_or_create(user=request.user)
         
-        if worker_counter.needs_payment:
+        if worker_counter.needs_payment:  # ✅ صحيح
+            from payments.serializers import UserTaskCounterSerializer
+            
             return Response({
                 'ok': False,
                 'subscriptionRequired': True,
                 'errorType': 'worker_limit_reached',
-                'message': f'Limite atteinte ({worker_counter.accepted_tasks_count}/5). Abonnement requis (8 MRU/mois).',
-                'counter': {
-                    'tasks_used': worker_counter.accepted_tasks_count,
-                    'tasks_remaining': worker_counter.tasks_remaining_before_payment,
-                    'needs_payment': worker_counter.needs_payment,
-                    'is_premium': worker_counter.is_premium,
-                }
+                'message': f'Limite atteinte ({worker_counter.current_usage}/{worker_counter.current_limit}). Abonnement requis.',
+                'counter': UserTaskCounterSerializer(worker_counter).data,
             }, status=status.HTTP_403_FORBIDDEN)
-        
+                
         # ================================
         # 5️⃣ التحقق من التصنيف (إذا موجود)
         # ================================
@@ -421,6 +419,7 @@ def accept_worker(request, pk):
     المهمة تصبح 'active' ويتواصل الطرفان خارج التطبيق
     
     التحديث: Signal يزيد العداد تلقائياً عند حفظ المهمة
+    النظام الجديد: دعم المهام المجانية + حزم المهام المدفوعة
     """
     service_request = get_object_or_404(ServiceRequest, id=pk)
     
@@ -449,37 +448,44 @@ def accept_worker(request, pk):
     )
     
     # ================================
-    # 3️⃣ التحقق من حد العميل
+    # 3️⃣ التحقق من حد العميل - النظام الجديد
     # ================================
     from payments.models import UserTaskCounter
     
     client_counter, _ = UserTaskCounter.objects.get_or_create(user=request.user)
+    
     if client_counter.needs_payment:
         return Response({
             'error': 'subscription_required',
             'error_type': 'client_limit_reached',
-            'message': 'لقد استنفدت الحد المجاني (5 مهام). يرجى الاشتراك للمتابعة.',
-            'message_fr': 'Vous avez atteint la limite gratuite (5 tâches). Veuillez vous abonner pour continuer.',
-            'tasks_used': client_counter.accepted_tasks_count,
-            'tasks_limit': 5,
-            'subscription_required': True
+            'message': 'يجب شراء حزمة جديدة للمتابعة (8 مهام بـ 5 أوقيات).',
+            'message_fr': 'Achat de bundle requis pour continuer (8 tâches pour 5 MRU).',
+            'counter_info': {
+                'current_usage': client_counter.current_usage,
+                'current_limit': client_counter.current_limit,
+                'tasks_remaining': client_counter.tasks_remaining,
+                'total_subscriptions': client_counter.total_subscriptions,
+            }
         }, status=status.HTTP_403_FORBIDDEN)
     
     # ================================
-    # 4️⃣ التحقق من حد العامل
+    # 4️⃣ التحقق من حد العامل - النظام الجديد
     # ================================
     worker = application.worker
     worker_counter, _ = UserTaskCounter.objects.get_or_create(user=worker)
+    
     if worker_counter.needs_payment:
         return Response({
             'error': 'subscription_required',
             'error_type': 'worker_limit_reached',
-            'message': f'العامل {worker.get_full_name() or worker.phone} وصل للحد المجاني. لا يمكن قبوله.',
-            'message_fr': f'Le travailleur {worker.get_full_name() or worker.phone} a atteint la limite gratuite.',
-            'worker_name': worker.get_full_name() or worker.phone,
-            'tasks_used': worker_counter.accepted_tasks_count,
-            'tasks_limit': 5,
-            'subscription_required': True
+            'message': f'العامل {worker.get_full_name() or worker.phone} يحتاج لشراء حزمة جديدة.',
+            'message_fr': f'Le travailleur {worker.get_full_name() or worker.phone} doit acheter un nouveau bundle.',
+            'worker_info': {
+                'name': worker.get_full_name() or worker.phone,
+                'current_usage': worker_counter.current_usage,
+                'current_limit': worker_counter.current_limit,
+                'tasks_remaining': worker_counter.tasks_remaining,
+            }
         }, status=status.HTTP_403_FORBIDDEN)
     
     # ================================
@@ -496,10 +502,6 @@ def accept_worker(request, pk):
     service_request.status = 'active'
     service_request.accepted_at = timezone.now()
     service_request.save()  # ✅ Signal يشتغل هنا ويزيد العداد!
-    
-    # ❌ حذفنا هذين السطرين (Signal سيفعلهما):
-    # client_counter.increment_counter()  ← Signal سيفعلها
-    # worker_counter.increment_counter()  ← Signal سيفعلها
     
     # ================================
     # 7️⃣ رفض باقي المتقدمين
@@ -545,9 +547,10 @@ def accept_worker(request, pk):
     worker_counter.refresh_from_db()
     
     # ================================
-    # 1️⃣1️⃣ إرجاع Response
+    # 1️⃣1️⃣ إرجاع Response - النظام الجديد
     # ================================
     return Response({
+        'ok': True,
         'message': '✅ Worker accepted successfully. The task is now active.',
         'message_fr': '✅ Travailleur accepté avec succès. La tâche est maintenant active.',
         'task_status': 'active',
@@ -557,23 +560,21 @@ def accept_worker(request, pk):
         # ✅ معلومات العداد المحدثة (بعد Signal)
         'task_counter': {
             'client': {
-                'tasks_used': client_counter.accepted_tasks_count,
-                'tasks_remaining': client_counter.tasks_remaining_before_payment,
+                'current_usage': client_counter.current_usage,
+                'current_limit': client_counter.current_limit,
+                'tasks_remaining': client_counter.tasks_remaining,
                 'needs_payment': client_counter.needs_payment,
-                'is_premium': client_counter.is_premium,
-                'counted_task_ids': client_counter.counted_task_ids  # ✅ للتتبع
+                'total_subscriptions': client_counter.total_subscriptions,
             },
             'worker': {
-                'tasks_used': worker_counter.accepted_tasks_count,
-                'tasks_remaining': worker_counter.tasks_remaining_before_payment,
+                'current_usage': worker_counter.current_usage,
+                'current_limit': worker_counter.current_limit,
+                'tasks_remaining': worker_counter.tasks_remaining,
                 'needs_payment': worker_counter.needs_payment,
-                'is_premium': worker_counter.is_premium,
-                'counted_task_ids': worker_counter.counted_task_ids  # ✅ للتتبع
+                'total_subscriptions': worker_counter.total_subscriptions,
             }
         }
     })
-
-
 @api_view(['PUT'])
 @permission_classes([permissions.IsAuthenticated])
 def update_task_status(request, pk):
@@ -933,3 +934,33 @@ class TaskReviewStatsView(generics.GenericAPIView):
                 '1': round((stats['one_star'] / stats['total_reviews'] * 100) if stats['total_reviews'] > 0 else 0, 1),
             }
         })
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_worker_applications_stats(request):
+    """
+    Get worker's applications statistics
+    """
+    worker = request.user
+    
+    pending = TaskApplication.objects.filter(
+        worker=worker,
+        application_status='pending'
+    ).count()
+    
+    accepted = TaskApplication.objects.filter(
+        worker=worker,
+        application_status='accepted'
+    ).count()
+    
+    rejected = TaskApplication.objects.filter(
+        worker=worker,
+        application_status='rejected'
+    ).count()
+    
+    return Response({
+        'pending': pending,
+        'accepted': accepted,
+        'rejected': rejected,
+        'total': pending + accepted + rejected
+    })

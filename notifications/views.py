@@ -16,10 +16,46 @@ from .serializers import (
     BulkNotificationSerializer,
     NotificationCreateSerializer
 )
-# في أول notifications/views.py
-# أضف هذه الدالة بعد الـ imports مباشرة
 
-
+# ✅ إضافة هذه الدالة بعد imports وقبل auto_cleanup_user_notifications
+def translate_notification_for_user(notification, user):
+    """
+    ترجمة الإشعار حسب لغة المستخدم
+    Translate notification based on user's preferred language
+    """
+    from .utils import get_translated_notification
+    
+    user_language = getattr(user, 'preferred_language', 'fr')
+    
+    # استخراج البيانات من الإشعار
+    format_kwargs = {}
+    
+    if notification.related_task:
+        format_kwargs['title'] = notification.related_task.title
+        format_kwargs['budget'] = str(notification.related_task.budget)
+        
+        # إضافة اسم العامل إذا كان موجود
+        if notification.related_task.assigned_worker:
+            worker = notification.related_task.assigned_worker
+            format_kwargs['worker_name'] = worker.get_full_name() or worker.phone
+        
+        # إضافة اسم العميل إذا كان موجود
+        if notification.related_task.client:
+            client = notification.related_task.client
+            format_kwargs['client_name'] = client.get_full_name() or client.phone
+    
+    # الحصول على النص المترجم
+    translated = get_translated_notification(
+        notification.notification_type,
+        user_language,
+        **format_kwargs
+    )
+    
+    # تحديث النص في الإشعار (فقط للعرض، بدون حفظ)
+    notification.title = translated['title']
+    notification.message = translated['message']
+    
+    return notification
 def auto_cleanup_user_notifications(user):
     """
     تنظيف تلقائي لإشعارات المستخدم القديمة
@@ -67,10 +103,9 @@ class NotificationListView(generics.ListAPIView):
         """الحصول على إشعارات المستخدم الحالي فقط"""
         user = self.request.user
         
-        # ✨ تنظيف تلقائي (سطر واحد فقط)
+        # ✨ تنظيف تلقائي
         auto_cleanup_user_notifications(user)
         
-        # باقي الكود كما هو...
         queryset = Notification.objects.filter(
             recipient=user
         ).select_related(
@@ -101,6 +136,28 @@ class NotificationListView(generics.ListAPIView):
                 pass
         
         return queryset
+    
+    # ✅ إضافة هذا الـ method الجديد
+    def list(self, request, *args, **kwargs):
+        """
+        عرض القائمة مع ترجمة الإشعارات
+        List with translated notifications
+        """
+        queryset = self.filter_queryset(self.get_queryset())
+        
+        # ✅ ترجمة كل إشعار حسب لغة المستخدم
+        notifications_list = list(queryset)
+        for notification in notifications_list:
+            translate_notification_for_user(notification, request.user)
+        
+        # معالجة pagination
+        page = self.paginate_queryset(notifications_list)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(notifications_list, many=True)
+        return Response(serializer.data)
 
 
 class NotificationDetailView(generics.RetrieveAPIView):
@@ -122,6 +179,9 @@ class NotificationDetailView(generics.RetrieveAPIView):
         # تحديد كمقروء إذا لم يكن مقروءاً
         if not instance.is_read:
             instance.mark_as_read()
+        
+        # ✅ ترجمة الإشعار
+        translate_notification_for_user(instance, request.user)
         
         serializer = self.get_serializer(instance)
         return Response(serializer.data)

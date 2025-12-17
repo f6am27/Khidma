@@ -1,38 +1,27 @@
-# payments/admin.py
-"""
-لوحة تحكم Admin لنظام عداد المهام والاشتراكات
-"""
-
 from django.contrib import admin
-from django.utils.html import format_html
-from django.urls import reverse
-from django.utils import timezone
-from .models import UserTaskCounter, PlatformSubscription
+from .models import UserTaskCounter, TaskBundle, PlatformSubscription
 
-
-# ================================
-# 1️⃣ عداد المهام
-# ================================
 
 @admin.register(UserTaskCounter)
 class UserTaskCounterAdmin(admin.ModelAdmin):
     """
-    لوحة تحكم عداد المهام
+    إدارة عدادات المهام - النظام الجديد
     """
     list_display = [
-        'user_info',
-        'accepted_tasks_count',
-        'tasks_remaining_display',
-        'status_badge',
-        'is_premium',
-        'last_payment_date',
-        'actions_buttons'
+        'id',
+        'user',
+        'free_tasks_used',
+        'total_subscriptions',
+        'current_limit',
+        'current_usage',
+        'tasks_remaining',
+        'needs_payment',
+        'created_at'
     ]
     
     list_filter = [
-        'is_premium',
-        ('last_payment_date', admin.DateFieldListFilter),
-        ('created_at', admin.DateFieldListFilter),
+        'total_subscriptions',
+        'created_at'
     ]
     
     search_fields = [
@@ -43,287 +32,153 @@ class UserTaskCounterAdmin(admin.ModelAdmin):
     ]
     
     readonly_fields = [
-        'user',
+        'current_limit',
+        'current_usage',
+        'tasks_remaining',
+        'needs_payment',
+        'get_active_bundle_info',
         'created_at',
-        'updated_at',
-        'counted_task_ids_display'
+        'updated_at'
     ]
+    
+    ordering = ['-created_at']
+    
+    def get_active_bundle_info(self, obj):
+        """عرض معلومات الحزمة النشطة"""
+        bundle = obj.get_active_bundle()
+        if bundle:
+            return f"Bundle #{bundle.id}: {bundle.tasks_used}/{bundle.tasks_included} مهام"
+        return "لا توجد حزمة نشطة"
+    get_active_bundle_info.short_description = "الحزمة النشطة"
     
     fieldsets = (
         ('معلومات المستخدم', {
-            'fields': ('user', 'is_premium')
+            'fields': ('user',)
         }),
-        ('إحصائيات المهام', {
+        ('المهام المجانية', {
+            'fields': ('free_tasks_used',)
+        }),
+        ('الاشتراكات', {
+            'fields': ('total_subscriptions', 'get_active_bundle_info')
+        }),
+        ('الحالة الحالية', {
             'fields': (
-                'accepted_tasks_count',
-                'counted_task_ids_display',
-                'last_payment_date',
-                'last_reset_date'
-            )
+                'current_limit',
+                'current_usage',
+                'tasks_remaining',
+                'needs_payment'
+            ),
+            'classes': ('collapse',)
         }),
-        ('تواريخ', {
+        ('التواريخ', {
             'fields': ('created_at', 'updated_at'),
             'classes': ('collapse',)
         }),
     )
-    
-    actions = [
-        'reset_counters',
-        'activate_premium',
-        'deactivate_premium'
+
+
+@admin.register(TaskBundle)
+class TaskBundleAdmin(admin.ModelAdmin):
+    """
+    إدارة حزم المهام المدفوعة
+    """
+    list_display = [
+        'id',
+        'user',
+        'tasks_usage_display',
+        'payment_amount',
+        'moosyl_payment_status',
+        'is_active',
+        'purchased_at'
     ]
     
-    def user_info(self, obj):
-        """عرض معلومات المستخدم"""
-        user = obj.user
-        name = user.get_full_name() or user.username
-        return format_html(
-            '<strong>{}</strong><br><small>{}</small>',
-            name,
-            user.phone
-        )
-    user_info.short_description = 'المستخدم'
+    list_filter = [
+        'moosyl_payment_status',
+        'is_active',
+        'bundle_type',
+        'purchased_at'
+    ]
     
-    def tasks_remaining_display(self, obj):
-        """عرض المهام المتبقية"""
-        remaining = obj.tasks_remaining_before_payment
-        if obj.is_premium:
-            return format_html(
-                '<span style="color: gold;">♾️ لا حدود</span>'
+    search_fields = [
+        'user__phone',
+        'user__username',
+        'moosyl_transaction_id'
+    ]
+    
+    readonly_fields = [
+        'is_exhausted',
+        'tasks_remaining',
+        'purchased_at',
+        'completed_at'
+    ]
+    
+    ordering = ['-purchased_at']
+    
+    def tasks_usage_display(self, obj):
+        """عرض استخدام المهام بشكل مرئي"""
+        percentage = (obj.tasks_used / obj.tasks_included * 100) if obj.tasks_included > 0 else 0
+        color = 'green' if percentage < 50 else ('orange' if percentage < 100 else 'red')
+        return f"<span style='color: {color}; font-weight: bold;'>{obj.tasks_used}/{obj.tasks_included}</span>"
+    tasks_usage_display.short_description = "استخدام المهام"
+    tasks_usage_display.allow_tags = True
+    
+    fieldsets = (
+        ('معلومات المستخدم', {
+            'fields': ('user',)
+        }),
+        ('تفاصيل الحزمة', {
+            'fields': (
+                'bundle_type',
+                'tasks_included',
+                'tasks_used',
+                'tasks_remaining',
+                'is_exhausted',
+                'is_active'
             )
-        elif remaining > 0:
-            return format_html(
-                '<span style="color: green;">✅ {}</span>',
-                remaining
+        }),
+        ('معلومات الدفع - Moosyl', {
+            'fields': (
+                'payment_amount',
+                'payment_method',
+                'moosyl_transaction_id',
+                'moosyl_payment_status'
             )
-        else:
-            return format_html(
-                '<span style="color: red;">⚠️ 0</span>'
-            )
-    tasks_remaining_display.short_description = 'متبقي'
-    
-    def status_badge(self, obj):
-        """حالة العداد"""
-        if obj.is_premium:
-            return format_html(
-                '<span style="background: gold; color: white; padding: 3px 8px; border-radius: 3px;">👑 Premium</span>'
-            )
-        elif obj.needs_payment:
-            return format_html(
-                '<span style="background: red; color: white; padding: 3px 8px; border-radius: 3px;">🔒 محظور</span>'
-            )
-        else:
-            return format_html(
-                '<span style="background: green; color: white; padding: 3px 8px; border-radius: 3px;">✅ نشط</span>'
-            )
-    status_badge.short_description = 'الحالة'
-    
-    def counted_task_ids_display(self, obj):
-        """عرض IDs المهام المحسوبة"""
-        if not obj.counted_task_ids:
-            return format_html('<em>لا توجد مهام محسوبة</em>')
-        
-        ids_str = ', '.join(str(id) for id in obj.counted_task_ids[:10])
-        total = len(obj.counted_task_ids)
-        
-        if total > 10:
-            ids_str += f' ... ({total - 10} أخرى)'
-        
-        return format_html(
-            '<code style="background: #f0f0f0; padding: 5px;">{}</code>',
-            ids_str
-        )
-    counted_task_ids_display.short_description = 'IDs المهام المحسوبة'
-    
-    def actions_buttons(self, obj):
-        """أزرار الإجراءات"""
-        return format_html(
-            '<a class="button" href="{}">إعادة تعيين</a> '
-            '<a class="button" href="{}">عرض المستخدم</a>',
-            reverse('admin:payments_usertaskcounter_change', args=[obj.pk]),
-            reverse('admin:users_user_change', args=[obj.user.pk])
-        )
-    actions_buttons.short_description = 'إجراءات'
-    
-    # Actions
-    def reset_counters(self, request, queryset):
-        """إعادة تعيين العدادات المحددة"""
-        count = 0
-        for counter in queryset:
-            counter.reset_counter()
-            count += 1
-        
-        self.message_user(
-            request,
-            f'✅ تم إعادة تعيين {count} عداد بنجاح'
-        )
-    reset_counters.short_description = '🔄 إعادة تعيين العدادات المحددة'
-    
-    def activate_premium(self, request, queryset):
-        """تفعيل Premium للمستخدمين المحددين"""
-        count = queryset.update(
-            is_premium=True,
-            last_payment_date=timezone.now()
-        )
-        
-        self.message_user(
-            request,
-            f'✅ تم تفعيل Premium لـ {count} مستخدم'
-        )
-    activate_premium.short_description = '👑 تفعيل Premium'
-    
-    def deactivate_premium(self, request, queryset):
-        """إلغاء Premium للمستخدمين المحددين"""
-        count = queryset.update(is_premium=False)
-        
-        self.message_user(
-            request,
-            f'✅ تم إلغاء Premium لـ {count} مستخدم'
-        )
-    deactivate_premium.short_description = '❌ إلغاء Premium'
+        }),
+        ('التواريخ', {
+            'fields': ('purchased_at', 'completed_at'),
+            'classes': ('collapse',)
+        }),
+    )
 
-
-# ================================
-# 2️⃣ الاشتراكات
-# ================================
 
 @admin.register(PlatformSubscription)
 class PlatformSubscriptionAdmin(admin.ModelAdmin):
     """
-    لوحة تحكم الاشتراكات
+    إدارة الاشتراكات القديمة (معطل - للتوافق فقط)
     """
     list_display = [
         'id',
-        'user_info',
-        'amount_display',
+        'user',
+        'amount',
+        'status',
         'payment_method',
-        'status_badge',
-        'validity_display',
         'created_at'
     ]
     
     list_filter = [
         'status',
         'payment_method',
-        ('created_at', admin.DateFieldListFilter),
-        ('valid_until', admin.DateFieldListFilter),
+        'created_at'
     ]
     
     search_fields = [
         'user__phone',
-        'user__username',
         'transaction_id'
     ]
     
     readonly_fields = [
         'created_at',
-        'updated_at',
-        'is_active_display',
-        'days_remaining_display'
+        'updated_at'
     ]
     
-    fieldsets = (
-        ('معلومات الاشتراك', {
-            'fields': (
-                'user',
-                'amount',
-                'payment_method',
-                'status'
-            )
-        }),
-        ('تفاصيل الدفع', {
-            'fields': (
-                'transaction_id',
-                'valid_until',
-                'is_active_display',
-                'days_remaining_display'
-            )
-        }),
-        ('تواريخ', {
-            'fields': ('created_at', 'updated_at'),
-            'classes': ('collapse',)
-        }),
-    )
-    
-    def user_info(self, obj):
-        """عرض معلومات المستخدم"""
-        user = obj.user
-        name = user.get_full_name() or user.username
-        return format_html(
-            '<strong>{}</strong><br><small>{}</small>',
-            name,
-            user.phone
-        )
-    user_info.short_description = 'المستخدم'
-    
-    def amount_display(self, obj):
-        """عرض المبلغ"""
-        return format_html(
-            '<strong>{} MRU</strong>',
-            obj.amount
-        )
-    amount_display.short_description = 'المبلغ'
-    
-    def status_badge(self, obj):
-        """حالة الاشتراك"""
-        colors = {
-            'pending': 'orange',
-            'completed': 'green',
-            'failed': 'red'
-        }
-        labels = {
-            'pending': '⏳ قيد الانتظار',
-            'completed': '✅ مكتمل',
-            'failed': '❌ فشل'
-        }
-        
-        color = colors.get(obj.status, 'gray')
-        label = labels.get(obj.status, obj.status)
-        
-        return format_html(
-            '<span style="background: {}; color: white; padding: 3px 8px; border-radius: 3px;">{}</span>',
-            color,
-            label
-        )
-    status_badge.short_description = 'الحالة'
-    
-    def validity_display(self, obj):
-        """صلاحية الاشتراك"""
-        if not obj.valid_until:
-            return '-'
-        
-        now = timezone.now()
-        if obj.valid_until > now:
-            days = (obj.valid_until - now).days
-            return format_html(
-                '<span style="color: green;">✅ {} يوم</span>',
-                days
-            )
-        else:
-            return format_html(
-                '<span style="color: red;">❌ منتهي</span>'
-            )
-    validity_display.short_description = 'الصلاحية'
-    
-    def is_active_display(self, obj):
-        """هل نشط؟"""
-        if obj.status == 'completed' and obj.valid_until and obj.valid_until > timezone.now():
-            return format_html(
-                '<span style="color: green; font-weight: bold;">✅ نشط</span>'
-            )
-        return format_html(
-            '<span style="color: red;">❌ غير نشط</span>'
-        )
-    is_active_display.short_description = 'نشط؟'
-    
-    def days_remaining_display(self, obj):
-        """الأيام المتبقية"""
-        if not obj.valid_until or obj.status != 'completed':
-            return '-'
-        
-        now = timezone.now()
-        if obj.valid_until > now:
-            days = (obj.valid_until - now).days
-            return f'{days} يوم'
-        return 'منتهي'
-    days_remaining_display.short_description = 'متبقي'
+    ordering = ['-created_at']

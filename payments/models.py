@@ -10,12 +10,11 @@ from django.conf import settings
 
 class UserTaskCounter(models.Model):
     """
-    عداد المهام المجانية لكل مستخدم (عميل أو عامل)
+    عداد المهام لكل مستخدم
     
-    النظام:
-    - 5 مهام مجانية لكل مستخدم
-    - بعد استنفاد الحد: اشتراك شهري مطلوب
-    - تتبع IDs المهام لمنع الحساب المزدوج
+    النظام الجديد:
+    - 5 مهام مجانية للبداية
+    - بعد ذلك: شراء حزم (8 مهام/حزمة بـ 5 أوقيات)
     """
     
     user = models.OneToOneField(
@@ -24,35 +23,19 @@ class UserTaskCounter(models.Model):
         related_name='task_counter'
     )
     
-    accepted_tasks_count = models.IntegerField(
+    # المهام المجانية (0-5)
+    free_tasks_used = models.IntegerField(
         default=0,
-        help_text="عدد المهام المقبولة (للعميل أو العامل)"
+        help_text="عدد المهام المجانية المستخدمة (من أصل 5)"
     )
     
-    # ✅ جديد: قائمة IDs المهام المحسوبة
-    counted_task_ids = models.JSONField(
-        default=list,
-        blank=True,
-        help_text="قائمة IDs المهام التي تم حسابها (لمنع الحساب المزدوج)"
+    # إحصائيات الاشتراكات
+    total_subscriptions = models.IntegerField(
+        default=0,
+        help_text="عدد مرات شراء الحزم (للإحصائيات)"
     )
     
-    last_payment_date = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="تاريخ آخر دفع للاشتراك"
-    )
-    
-    last_reset_date = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="تاريخ آخر إعادة تعيين للعداد"
-    )
-    
-    is_premium = models.BooleanField(
-        default=False,
-        help_text="هل المستخدم مشترك (premium)؟"
-    )
-    
+    # تواريخ
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
@@ -62,39 +45,200 @@ class UserTaskCounter(models.Model):
         ordering = ['-created_at']
     
     def __str__(self):
-        return f"{self.user.phone} - {self.accepted_tasks_count}/5 مهام"
+        return f"{self.user.phone} - {self.free_tasks_used}/5 مجانية - {self.total_subscriptions} اشتراكات"
     
-    def increment_counter(self):
-        """زيادة عداد المهام المقبولة"""
-        self.accepted_tasks_count += 1
-        self.save()
+    def get_active_bundle(self):
+        """الحصول على الحزمة النشطة الحالية"""
+        return TaskBundle.objects.filter(
+            user=self.user,
+            is_active=True,
+            moosyl_payment_status='completed'
+        ).first()
     
-    def reset_counter(self):
-        """إعادة تعيين العداد بعد الدفع"""
-        from django.utils import timezone
-        self.accepted_tasks_count = 0
-        self.counted_task_ids = []  # ✅ إعادة تعيين القائمة
-        self.last_payment_date = timezone.now()
-        self.last_reset_date = timezone.now()
-        self.save()
+    @property
+    def current_limit(self):
+        """الحد الحالي للمهام"""
+        active_bundle = self.get_active_bundle()
+        if active_bundle:
+            return active_bundle.tasks_included  # 8
+        return 5  # المجاني
+    
+    @property
+    def current_usage(self):
+        """عدد المهام المستخدمة حالياً"""
+        active_bundle = self.get_active_bundle()
+        if active_bundle:
+            return active_bundle.tasks_used
+        return self.free_tasks_used
     
     @property
     def needs_payment(self):
         """
         هل يحتاج المستخدم للدفع؟
-        True = وصل للحد المجاني وليس premium
+        True = يجب شراء حزمة جديدة
         """
-        FREE_TASK_LIMIT = getattr(settings, 'FREE_TASK_LIMIT', 5)
-        return self.accepted_tasks_count >= FREE_TASK_LIMIT and not self.is_premium
+        # 1. إذا لم يستنفد المجاني بعد
+        if self.free_tasks_used < 5:
+            return False
+        
+        # 2. التحقق من الحزمة النشطة
+        active_bundle = self.get_active_bundle()
+        if active_bundle:
+            return active_bundle.is_exhausted
+        
+        # 3. استنفد المجاني ولا توجد حزمة نشطة
+        return True
     
     @property
-    def tasks_remaining_before_payment(self):
-        """عدد المهام المتبقية قبل طلب الاشتراك"""
-        FREE_TASK_LIMIT = getattr(settings, 'FREE_TASK_LIMIT', 5)
-        if self.is_premium:
-            return float('inf')  # لا حدود للمشتركين
-        remaining = FREE_TASK_LIMIT - self.accepted_tasks_count
-        return max(0, remaining)
+    def tasks_remaining(self):
+        """عدد المهام المتبقية"""
+        active_bundle = self.get_active_bundle()
+        if active_bundle:
+            return active_bundle.tasks_remaining
+        
+        # المهام المجانية المتبقية
+        return max(0, 5 - self.free_tasks_used)
+    
+    def increment_counter(self, task_id):
+        """
+        زيادة العداد (تُستدعى من Signal)
+        
+        المنطق:
+        1. إذا كان في الفترة المجانية → زيادة free_tasks_used
+        2. إذا كان لديه حزمة نشطة → زيادة tasks_used في الحزمة
+        """
+        active_bundle = self.get_active_bundle()
+        
+        if active_bundle and not active_bundle.is_exhausted:
+            # لديه حزمة نشطة → استخدم منها
+            success = active_bundle.increment_usage()
+            if success:
+                print(f"✅ Bundle usage increased: {self.user.phone} - Task #{task_id} - {active_bundle.tasks_used}/{active_bundle.tasks_included}")
+            return success
+        
+        elif self.free_tasks_used < 5:
+            # لا يزال في الفترة المجانية
+            self.free_tasks_used += 1
+            self.save()
+            print(f"✅ Free tasks increased: {self.user.phone} - Task #{task_id} - {self.free_tasks_used}/5")
+            return True
+        
+        else:
+            # لا يمكن الزيادة (يحتاج اشتراك)
+            print(f"❌ Cannot increment: {self.user.phone} needs subscription")
+            return False
+    
+class TaskBundle(models.Model):
+    """
+    حزمة مهام مدفوعة (8 مهام بـ 5 أوقيات)
+    يتم إنشاء حزمة جديدة عند كل عملية شراء عبر Moosyl
+    """
+    
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='task_bundles'
+    )
+    
+    # تفاصيل الحزمة
+    bundle_type = models.CharField(
+        max_length=50,
+        default='paid_8_tasks',
+        help_text="نوع الحزمة"
+    )
+    
+    tasks_included = models.IntegerField(
+        default=8,
+        help_text="عدد المهام في الحزمة"
+    )
+    
+    tasks_used = models.IntegerField(
+        default=0,
+        help_text="عدد المهام المستخدمة من الحزمة"
+    )
+    
+    # معلومات الدفع - Moosyl
+    payment_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=5.00,
+        help_text="المبلغ بالأوقية (MRU)"
+    )
+    
+    payment_method = models.CharField(
+        max_length=20,
+        default='moosyl',
+        help_text="طريقة الدفع"
+    )
+    
+    moosyl_transaction_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="معرف المعاملة من Moosyl"
+    )
+    
+    moosyl_payment_status = models.CharField(
+        max_length=50,
+        default='pending',
+        choices=[
+            ('pending', 'قيد الانتظار'),
+            ('completed', 'مكتمل'),
+            ('failed', 'فشل'),
+        ],
+        help_text="حالة الدفع من Moosyl"
+    )
+    
+    # حالة الحزمة
+    is_active = models.BooleanField(
+        default=True,
+        help_text="هل الحزمة نشطة؟"
+    )
+    
+    # تواريخ
+    purchased_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="تاريخ إنهاء جميع مهام الحزمة"
+    )
+    
+    class Meta:
+        verbose_name = "حزمة مهام"
+        verbose_name_plural = "حزم المهام"
+        ordering = ['-purchased_at']
+        indexes = [
+            models.Index(fields=['user', 'is_active']),
+            models.Index(fields=['moosyl_transaction_id']),
+        ]
+    
+    def __str__(self):
+        return f"{self.user.phone} - {self.tasks_used}/{self.tasks_included} مهام - {self.get_moosyl_payment_status_display()}"
+    
+    @property
+    def is_exhausted(self):
+        """هل تم استنفاد الحزمة؟"""
+        return self.tasks_used >= self.tasks_included
+    
+    @property
+    def tasks_remaining(self):
+        """عدد المهام المتبقية في الحزمة"""
+        return max(0, self.tasks_included - self.tasks_used)
+    
+    def increment_usage(self):
+        """زيادة عداد الاستخدام"""
+        if self.tasks_used < self.tasks_included:
+            self.tasks_used += 1
+            
+            # إذا اكتملت الحزمة
+            if self.tasks_used >= self.tasks_included:
+                from django.utils import timezone
+                self.is_active = False
+                self.completed_at = timezone.now()
+            
+            self.save()
+            return True
+        return False
 
 
 class PlatformSubscription(models.Model):
