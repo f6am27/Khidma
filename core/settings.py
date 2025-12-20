@@ -292,8 +292,8 @@ MOOSYL_BASE_URL = 'https://api.moosyl.com'
 # Webhook URL (سيتم تحديثه للـ Production)
 MOOSYL_WEBHOOK_URL = os.environ.get(
     'MOOSYL_WEBHOOK_URL', 
-    'https://71fc0cd29ca1.ngrok-free.app/api/payments/moosyl/webhook/'
-    )
+    'http://localhost:8000/api/payments/moosyl/webhook/'
+)
 
 # Timeout settings
 MOOSYL_TIMEOUT = 30  # seconds

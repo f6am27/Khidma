@@ -13,10 +13,8 @@ class User(AbstractUser):
     Custom User Model - مستخدم مخصص
     يدعم phone للعميل/العامل + email للأدمن فقط
     """
-    # إزالة username الافتراضي
     username = None
     
-    # حقل email (للأدمن إجباري، للآخرين اختياري)
     email = models.EmailField(
         unique=True,
         blank=True,
@@ -92,9 +90,7 @@ class User(AbstractUser):
         verbose_name="سبب التعليق",
         help_text="سبب تعليق الحساب"
     )
-    # ✅✅✅ نهاية الإضافة ✅✅✅
     
-    # تحديد حقل تسجيل الدخول للأدمن
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['first_name']
     
